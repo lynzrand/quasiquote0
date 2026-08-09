@@ -1,3 +1,12 @@
+# UART0 TX is GPIO20, which is the Quote/0 EPD power rail. Never let the IDF
+# console claim it; USB Serial/JTAG (GPIO18/19) is the host transport.
+CONFIG_ESP_CONSOLE_NONE=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_ENABLED=y
+
 # Rust often needs a bit of an extra main task stack size compared to C (the default is 3K)
 # You might have to increase this further if you allocate large stack variables in the main task
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
