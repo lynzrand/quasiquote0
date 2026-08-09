@@ -13,6 +13,9 @@ build-std = ["std", "panic_abort"]
 MCU = "esp32c3"
 ESP_IDF_VERSION = "v5.5.3"
 ESP_IDF_TOOLS_INSTALL_DIR = "workspace"
+# embuild copies this partition table into its generated ESP-IDF project.
+ESP_IDF_GLOB_BASE = { value = ".", relative = true }
+ESP_IDF_GLOB_PARTITIONS = "partitions.csv"
 
 # Uncomment this if you have moved the target dir by setting CARGO_TARGET_DIR or similar.
 # Required for now due to embuild limitations.

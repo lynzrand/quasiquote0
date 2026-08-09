@@ -17,6 +17,14 @@ GPIO20 powers the EPD panel and is also UART0 TX on the ESP32-C3. The project
 therefore configures ESP-IDF with no UART console. USB Serial/JTAG is the
 supported host transport.
 
+## Flash layout
+
+The 4 MiB device uses the minimum 12 KiB NVS partition, OTA metadata, `ota_0`
+and `ota_1` (1.875 MiB each), then a 192 KiB LittleFS volume labelled
+`littlefs`.
+`partitions.csv` is copied into ESP-IDF's generated project through the Cargo
+environment configuration.
+
 ## Deliberate next boundary
 
 `display::Epd` currently establishes the panel's GPIO, power/reset and BUSY

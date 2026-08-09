@@ -1,0 +1,11 @@
+# Quote/0 4 MiB flash layout.
+#
+# The OTA slots retain the 0x1e0000 size used by the reference firmware. The
+# final 192 KiB is available to esp_littlefs under the `littlefs` label.
+# Name,     Type, SubType, Offset,    Size,      Flags
+nvs,        data, nvs,     0x9000,    0x3000,
+otadata,    data, ota,     0xc000,    0x2000,
+phy_init,   data, phy,     0xe000,    0x1000,
+ota_0,      app,  ota_0,   0x10000,   0x1e0000,
+ota_1,      app,  ota_1,   0x1f0000,  0x1e0000,
+littlefs,   data, spiffs,  0x3d0000,  0x30000,
