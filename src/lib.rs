@@ -4,11 +4,15 @@
 //! policy loop. A future firmware crate should construct these drivers from
 //! `esp_idf_hal::peripherals::Peripherals` and own its scheduling itself.
 
+pub mod battery;
 pub mod bluetooth;
 pub mod display;
 pub mod embedded_graphics;
+pub mod jsonrpc;
+pub mod status_screen;
 pub mod usb_serial;
 pub mod wifi;
+pub mod yamux;
 
 /// Perform the ESP-IDF runtime linkage required by every firmware binary.
 ///

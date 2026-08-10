@@ -1,11 +1,47 @@
 //! Bluetooth LE primitives for Quote/0.
 //!
-//! The board uses the ESP-IDF NimBLE host. Host-task ownership is intentionally
-//! not started here: an application must decide when the radio is enabled and
-//! own the host lifecycle. `BthomeAdvertisement` provides the driver-neutral
-//! payload for a non-connectable BTHome v2 broadcaster.
+//! The board uses the ESP-IDF NimBLE host. `Bluetooth` owns host startup;
+//! advertising policy remains in the application. `BthomeAdvertisement`
+//! provides a driver-neutral payload for a non-connectable BTHome v2 broadcaster.
+
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub const BTHOME_PAYLOAD_LEN: usize = 21;
+static HOST_SYNCED: AtomicBool = AtomicBool::new(false);
+
+/// A running NimBLE host task.
+pub struct Bluetooth;
+
+impl Bluetooth {
+    pub fn start() -> Result<Self, esp_idf_hal::sys::EspError> {
+        unsafe {
+            esp_idf_sys::esp!(esp_idf_sys::nimble_port_init())?;
+            esp_idf_sys::ble_hs_cfg.sync_cb = Some(on_sync);
+            esp_idf_sys::ble_hs_cfg.reset_cb = Some(on_reset);
+            esp_idf_sys::nimble_port_freertos_init(Some(host_task));
+        }
+        Ok(Self)
+    }
+
+    pub fn is_ready(&self) -> bool {
+        HOST_SYNCED.load(Ordering::SeqCst)
+    }
+}
+
+extern "C" fn on_sync() {
+    HOST_SYNCED.store(true, Ordering::SeqCst);
+}
+
+extern "C" fn on_reset(_reason: i32) {
+    HOST_SYNCED.store(false, Ordering::SeqCst);
+}
+
+extern "C" fn host_task(_param: *mut core::ffi::c_void) {
+    unsafe {
+        esp_idf_sys::nimble_port_run();
+        esp_idf_sys::nimble_port_freertos_deinit();
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BthomeAdvertisement {

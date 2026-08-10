@@ -7,9 +7,30 @@ use esp_idf_hal::delay::BLOCK;
 use esp_idf_hal::gpio::{Gpio18, Gpio19};
 use esp_idf_hal::sys::EspError;
 use esp_idf_hal::usb_serial::{UsbSerialConfig, UsbSerialDriver, USB_SERIAL};
+use std::io::{self, Read, Write};
 
 pub struct UsbSerial<'d> {
     inner: UsbSerialDriver<'d>,
+}
+
+impl Read for UsbSerial<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buffer, BLOCK).map_err(to_io_error)
+    }
+}
+
+impl Write for UsbSerial<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.inner.write(bytes, BLOCK).map_err(to_io_error)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn to_io_error(error: EspError) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, error.to_string())
 }
 
 impl<'d> UsbSerial<'d> {
