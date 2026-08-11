@@ -14,6 +14,7 @@ pub mod frame;
 pub mod jsonrpc;
 pub mod rpc;
 pub mod status_bar;
+pub mod status_icons;
 pub mod status_screen;
 pub mod store;
 pub mod usb_serial;

@@ -1,10 +1,14 @@
 //! The small device-owned status overlay described in the proposal.
 //!
-//! It deliberately uses compact text glyphs until the final one-bit icon set
-//! is supplied. The bar never owns refresh scheduling; callers compose it only
-//! when they have already decided to refresh the panel.
+//! The supplied one-bit icons are compiled into the firmware. The bar never
+//! owns refresh scheduling; callers compose it only when they have already
+//! decided to refresh the panel.
 
 use crate::frame::{Frame, HEIGHT, WIDTH};
+use crate::status_icons::{
+    Icon, BATTERY_0, BATTERY_100, BATTERY_25, BATTERY_50, BATTERY_75, BATTERY_CRITICAL, BLUETOOTH,
+    CHARGING, WIFI_CONNECTED, WIFI_DISCONNECTED, WIFI_PULL_FAILED,
+};
 
 pub const WIDTH_PIXELS: usize = 16;
 pub const CONTENT_WIDTH: usize = WIDTH - WIDTH_PIXELS;
@@ -50,32 +54,51 @@ impl StatusBar {
         }
 
         if let Some(marker) = self.battery {
-            let text = match marker {
-                BatteryMarker::Level(level) => match level.min(4) {
-                    0 => "B0",
-                    1 => "B1",
-                    2 => "B2",
-                    3 => "B3",
-                    _ => "B4",
-                },
-                BatteryMarker::Charging => "B+",
-                BatteryMarker::Critical => "B!",
-            };
-            draw_text(frame, 2, 4, text);
+            draw_icon(frame, 0, battery_icon(marker));
         }
         if let Some(marker) = self.wifi {
-            let text = match marker {
-                WifiMarker::Connected => "W+",
-                WifiMarker::Connecting => "W~",
-                WifiMarker::Failed => "W!",
-            };
-            draw_text(frame, 2, 26, text);
+            draw_icon(frame, 24, wifi_icon(marker));
         }
         if self.usb_present {
-            draw_text(frame, 2, 48, "U");
+            // A deliberately short placeholder until the USB icon is supplied.
+            draw_text(frame, 6, 47, "U");
         }
         if self.bluetooth_present {
-            draw_text(frame, 2, 70, "T");
+            draw_icon(frame, 64, BLUETOOTH);
+        }
+    }
+}
+
+fn battery_icon(marker: BatteryMarker) -> Icon {
+    match marker {
+        BatteryMarker::Level(level) => match level.min(4) {
+            0 => BATTERY_0,
+            1 => BATTERY_25,
+            2 => BATTERY_50,
+            3 => BATTERY_75,
+            _ => BATTERY_100,
+        },
+        BatteryMarker::Charging => CHARGING,
+        BatteryMarker::Critical => BATTERY_CRITICAL,
+    }
+}
+
+fn wifi_icon(marker: WifiMarker) -> Icon {
+    match marker {
+        WifiMarker::Connected => WIFI_CONNECTED,
+        // There is no distinct association-progress artwork; disconnected is
+        // the least misleading snapshot while association is incomplete.
+        WifiMarker::Connecting => WIFI_DISCONNECTED,
+        WifiMarker::Failed => WIFI_PULL_FAILED,
+    }
+}
+
+fn draw_icon(frame: &mut Frame, y: usize, icon: Icon) {
+    for (row_index, row) in icon.iter().copied().enumerate() {
+        for column in 0..WIDTH_PIXELS {
+            if row & (0x8000 >> column) != 0 {
+                frame.set_pixel(CONTENT_WIDTH + column, y + row_index, false);
+            }
         }
     }
 }
@@ -128,7 +151,8 @@ mod tests {
 
         assert_eq!(frame.pixel_is_white(CONTENT_WIDTH - 1, 0), Some(false));
         assert_eq!(frame.pixel_is_white(CONTENT_WIDTH, HEIGHT - 1), Some(true));
-        assert_eq!(frame.pixel_is_white(CONTENT_WIDTH + 2, 4), Some(false));
+        // Battery-75's top terminal begins at column 6 in the sprite's second row.
+        assert_eq!(frame.pixel_is_white(CONTENT_WIDTH + 6, 1), Some(false));
     }
 
     #[test]

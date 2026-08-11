@@ -218,22 +218,18 @@ small battery changes do not cause a refresh by themselves. This avoids costly
 full-screen refreshes and means the indicators describe state at the time of
 the last displayed update, not a live dashboard.
 
-The initial implementation uses short text placeholders until purpose-drawn
-one-bit icons are available:
-
-| State                               | Placeholder       |
-| ----------------------------------- | ----------------- |
-| Battery level                       | `B0` through `B4` |
-| Charging / critical battery         | `B+` / `B!`       |
-| Last Wi-Fi pull succeeded           | `W+`              |
-| Wi-Fi connecting / last pull failed | `W~` / `W!`       |
-| USB VBUS present                    | `U`               |
-| Bluetooth enabled or connected      | `T`               |
+The supplied 16 x 16 one-bit artwork is compiled into the firmware for Wi-Fi
+(connected, pull failed, disconnected), battery (0/25/50/75/100, critical,
+charging), and Bluetooth. It is rendered unchanged in the reserved columns:
+Wi-Fi at the top, battery beneath it, Bluetooth lower down. Wi-Fi association
+in progress uses the disconnected artwork because no separate progress icon
+exists. USB VBUS remains the deliberately short `U` placeholder until its
+bitmap is supplied.
 
 Absent or inapplicable indicators are left blank. Bluetooth remains outside
-the first-release scope, so its row remains blank until Bluetooth support is
-actually enabled. The later icon assets may replace these glyphs without
-changing the status model, layout, or frame protocol.
+the first-release scope, so its icon remains blank until Bluetooth support is
+actually enabled. Replacing the final USB placeholder does not change the
+status model, layout, or frame protocol.
 
 The persisted `content_sha256` identifies the canonical producer-supplied
 frame and remains the value used for HTTP caching and content-change decisions.
