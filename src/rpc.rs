@@ -3,14 +3,19 @@
 use crate::config::Config;
 use crate::device::Device;
 use crate::jsonrpc::{Error, Handler, Request};
-use crate::store::DesiredFrame;
+use crate::store::{DesiredFrame, FrameMeta};
+use crate::yamux::{Yamux, YamuxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
 pub struct DeviceRpc {
-    device: Device,
+    device: Arc<Mutex<Device>>,
+    yamux: Yamux,
     reboot_requested: bool,
 }
 
@@ -23,9 +28,9 @@ pub enum ControlRpc {
 }
 
 impl ControlRpc {
-    pub fn mount() -> Self {
+    pub fn mount(yamux: Yamux) -> Self {
         match Device::mount() {
-            Ok(device) => Self::Ready(DeviceRpc::new(device)),
+            Ok(device) => Self::Ready(DeviceRpc::new(Arc::new(Mutex::new(device)), yamux)),
             Err(error) => Self::Recovery {
                 error: error.to_string(),
             },
@@ -34,19 +39,12 @@ impl ControlRpc {
 }
 
 impl DeviceRpc {
-    pub fn new(device: Device) -> Self {
+    pub fn new(device: Arc<Mutex<Device>>, yamux: Yamux) -> Self {
         Self {
             device,
+            yamux,
             reboot_requested: false,
         }
-    }
-
-    pub fn device(&self) -> &Device {
-        &self.device
-    }
-
-    pub fn device_mut(&mut self) -> &mut Device {
-        &mut self.device
     }
 
     pub fn take_reboot_request(&mut self) -> bool {
@@ -65,13 +63,18 @@ impl DeviceRpc {
                 value(RebootResult { rebooting: true })
             }
             "config.get" => value(ConfigGetResult {
-                config: self.device.config().redacted(),
+                config: self.device.lock().unwrap().config().redacted(),
             }),
             "config.set" => self.config_set(params),
             "wifi.clear" => {
-                self.device.clear_wifi().map_err(device_error)?;
+                self.device
+                    .lock()
+                    .unwrap()
+                    .clear_wifi()
+                    .map_err(device_error)?;
                 value(WifiClearResult { cleared: true })
             }
+            "frame.begin" => self.frame_begin(params),
             "frame.metadata" | "frame.getMetadata" => value(self.frame_metadata()),
             "diagnostics.get" => value(self.diagnostics()?),
             _ => Err(Error::method_not_found()),
@@ -113,12 +116,13 @@ impl DeviceRpc {
 
     fn status(&self) -> Result<StatusResult, Error> {
         let battery = crate::battery::read();
-        let (total, used) = self.device.filesystem_info().map_err(device_error)?;
-        let state = self.device.state();
+        let device = self.device.lock().unwrap();
+        let (total, used) = device.filesystem_info().map_err(device_error)?;
+        let state = device.state();
         Ok(StatusResult {
             protocol: PROTOCOL_VERSION,
             firmware: env!("CARGO_PKG_VERSION"),
-            configured: !self.device.config().wifi.ssid.is_empty(),
+            configured: !device.config().wifi.ssid.is_empty(),
             battery: BatteryStatus {
                 millivolts: battery.millivolts,
                 percent: battery.percent,
@@ -138,13 +142,15 @@ impl DeviceRpc {
 
     fn config_set(&mut self, params: &Value) -> Result<Value, Error> {
         let mut next = parse_config(params)?;
-        preserve_redacted_secrets(self.device.config(), &mut next);
-        self.device.replace_config(next).map_err(device_error)?;
+        let mut device = self.device.lock().unwrap();
+        preserve_redacted_secrets(device.config(), &mut next);
+        device.replace_config(next).map_err(device_error)?;
         value(ConfigSetResult { accepted: true })
     }
 
     fn frame_metadata(&self) -> FrameMetadataResult {
-        let state = self.device.state();
+        let device = self.device.lock().unwrap();
+        let state = device.state();
         FrameMetadataResult {
             desired: state.desired.clone(),
             displayed_content_sha256: state.displayed_content_sha256.clone(),
@@ -153,13 +159,79 @@ impl DeviceRpc {
     }
 
     fn diagnostics(&self) -> Result<DiagnosticsResult, Error> {
-        let (total, used) = self.device.filesystem_info().map_err(device_error)?;
+        let device = self.device.lock().unwrap();
+        let (total, used) = device.filesystem_info().map_err(device_error)?;
         Ok(DiagnosticsResult {
             filesystem_total_bytes: total,
             filesystem_used_bytes: used,
-            configured_pull: self.device.config().pull.enabled,
-            ota_pending: self.device.state().ota_pending.clone(),
+            configured_pull: device.config().pull.enabled,
+            ota_pending: device.state().ota_pending.clone(),
         })
+    }
+
+    fn frame_begin(&self, params: &Value) -> Result<Value, Error> {
+        let params: FrameBeginParams = serde_json::from_value(params.clone())
+            .map_err(|error| Error::invalid_params(error.to_string()))?;
+        let expected = parse_sha256(&params.sha256)?;
+        let stream = self.yamux.open().map_err(transport_error)?;
+        let stream_id = stream.id();
+        let device = self.device.clone();
+        let metadata = FrameMeta {
+            generation: params.generation,
+            source: params.source.unwrap_or_else(|| "usb".to_owned()),
+            accepted_at_ms: params.accepted_at_ms,
+        };
+        thread::Builder::new()
+            .name("frame-upload".into())
+            .stack_size(8 * 1024)
+            .spawn(move || receive_frame_upload(device, stream, expected, metadata))
+            .map_err(transport_error)?;
+        value(FrameBeginResult {
+            stream: stream_id,
+            expected_bytes: crate::frame::FRAME_BYTES,
+        })
+    }
+}
+
+fn receive_frame_upload(
+    device: Arc<Mutex<Device>>,
+    mut stream: YamuxStream,
+    expected: crate::frame::Sha256Digest,
+    metadata: FrameMeta,
+) {
+    let result = (|| -> Result<(), String> {
+        let mut writer = device
+            .lock()
+            .unwrap()
+            .begin_frame_write(expected)
+            .map_err(|error| error.to_string())?;
+        let mut remaining = crate::frame::FRAME_BYTES;
+        let mut buffer = [0u8; 512];
+        while remaining != 0 {
+            let chunk_len = remaining.min(buffer.len());
+            let count = stream
+                .read(&mut buffer[..chunk_len])
+                .map_err(|error| error.to_string())?;
+            if count == 0 {
+                return Err("frame stream ended before the announced length".to_owned());
+            }
+            writer
+                .write_all(&buffer[..count])
+                .map_err(|error| error.to_string())?;
+            remaining -= count;
+        }
+        // Exact length is the end-of-upload marker. Do not wait for the host
+        // to close; that lets a sender reuse its own scheduling independently.
+        stream.close();
+        let digest = writer.finish().map_err(|error| error.to_string())?;
+        device
+            .lock()
+            .unwrap()
+            .commit_frame(digest, metadata)
+            .map_err(|error| error.to_string())
+    })();
+    if result.is_err() {
+        stream.close();
     }
 }
 
@@ -208,6 +280,18 @@ impl Handler for ControlRpc {
 enum ConfigSetParams {
     Wrapped { config: Config },
     Direct(Config),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrameBeginParams {
+    sha256: String,
+    #[serde(default)]
+    generation: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    accepted_at_ms: u64,
 }
 
 fn parse_config(params: &Value) -> Result<Config, Error> {
@@ -365,11 +449,49 @@ struct FrameMetadataResult {
 }
 
 #[derive(Serialize)]
+struct FrameBeginResult {
+    stream: u32,
+    expected_bytes: usize,
+}
+
+#[derive(Serialize)]
 struct DiagnosticsResult {
     filesystem_total_bytes: usize,
     filesystem_used_bytes: usize,
     configured_pull: bool,
     ota_pending: Option<String>,
+}
+
+fn parse_sha256(value: &str) -> Result<crate::frame::Sha256Digest, Error> {
+    if value.len() != 64 {
+        return Err(Error::invalid_params(
+            "sha256 must be 64 lowercase hex characters",
+        ));
+    }
+    let mut output = [0; 32];
+    for (slot, pair) in output.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+        let high =
+            hex(pair[0]).ok_or_else(|| Error::invalid_params("sha256 is not lowercase hex"))?;
+        let low =
+            hex(pair[1]).ok_or_else(|| Error::invalid_params("sha256 is not lowercase hex"))?;
+        *slot = high << 4 | low;
+    }
+    Ok(output)
+}
+
+fn hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn transport_error(error: impl core::fmt::Display) -> Error {
+    Error {
+        code: -32002,
+        message: error.to_string(),
+    }
 }
 
 #[cfg(test)]

@@ -60,6 +60,6 @@ fn main() {
 
     let usb = UsbSerial::new(usb_serial, pins.gpio18, pins.gpio19).expect("USB setup failed");
     let yamux = Yamux::start(usb, Mode::Server).expect("Yamux driver failed");
-    let mut rpc = ControlRpc::mount();
+    let mut rpc = ControlRpc::mount(yamux.clone());
     jsonrpc::serve(yamux.control_stream(), &mut rpc).expect("stream-0 JSON-RPC failed");
 }

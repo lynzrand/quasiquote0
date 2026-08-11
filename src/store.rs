@@ -6,11 +6,12 @@
 //! to recovery code and is never reformatted automatically.
 
 use crate::config::Config;
-use crate::frame::{digest_hex, Frame, Sha256Digest};
+use crate::frame::{digest_hex, Frame, Sha256Digest, FRAME_BYTES};
 use core::fmt;
 use esp_idf_svc::fs::littlefs::Littlefs;
 use esp_idf_svc::io::vfs::MountedLittlefs;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -86,6 +87,26 @@ pub struct Store {
     root: PathBuf,
 }
 
+// ESP-IDF's VFS serializes LittleFS operations. `MountedLittlefs` carries raw
+// partition pointers and therefore conservatively opts out of `Send`, but this
+// wrapper never exposes it: every Store access is serialized by Device's
+// mutex, and the mount remains alive until the whole device state is dropped.
+// This is required for a transfer worker to write while the USB control task
+// remains responsive.
+unsafe impl Send for Store {}
+
+/// An uncommitted frame write. Data is written directly to LittleFS as it is
+/// received. Its temporary file is removed unless [`finish`](Self::finish)
+/// verifies both the exact canonical size and caller-announced digest.
+pub struct FrameWriter {
+    temporary: PathBuf,
+    final_path: PathBuf,
+    expected: Sha256Digest,
+    file: Option<File>,
+    hasher: Sha256,
+    written: usize,
+}
+
 impl Store {
     pub fn mount() -> Result<Self, StoreError> {
         let blank = partition_is_erased()?;
@@ -145,11 +166,38 @@ impl Store {
     /// to a partial frame.
     pub fn save_frame(&self, frame: &Frame) -> Result<Sha256Digest, StoreError> {
         let digest = frame.sha256();
-        let path = self.frame_path(&digest);
-        if !path.exists() {
-            write_atomic(&path, frame.as_bytes())?;
+        let mut writer = self.begin_frame_write(digest)?;
+        writer.write_all(frame.as_bytes())?;
+        writer.finish()
+    }
+
+    /// Start an atomic, bounded write for a content-addressed canonical frame.
+    pub fn begin_frame_write(&self, expected: Sha256Digest) -> Result<FrameWriter, StoreError> {
+        let final_path = self.frame_path(&expected);
+        let temporary = PathBuf::from(format!("{}.new", final_path.display()));
+        match fs::remove_file(&temporary) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
-        Ok(digest)
+        let file = if final_path.exists() {
+            None
+        } else {
+            Some(
+                OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&temporary)?,
+            )
+        };
+        Ok(FrameWriter {
+            temporary,
+            final_path,
+            expected,
+            file,
+            hasher: Sha256::new(),
+            written: 0,
+        })
     }
 
     pub fn load_frame(&self, digest: &Sha256Digest) -> Result<Option<Frame>, StoreError> {
@@ -228,6 +276,67 @@ impl Store {
 
     fn path(&self, relative: &str) -> PathBuf {
         self.root.join(relative)
+    }
+}
+
+impl Write for FrameWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let remaining = FRAME_BYTES.saturating_sub(self.written);
+        if bytes.len() > remaining {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "frame exceeds canonical length",
+            ));
+        }
+        if let Some(file) = self.file.as_mut() {
+            file.write_all(bytes)?;
+        }
+        self.hasher.update(bytes);
+        self.written += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if let Some(file) = self.file.as_mut() {
+            file.flush()
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl FrameWriter {
+    pub fn written(&self) -> usize {
+        self.written
+    }
+
+    pub fn finish(mut self) -> Result<Sha256Digest, StoreError> {
+        if self.written != FRAME_BYTES {
+            return Err(StoreError("frame has incorrect length".to_owned()));
+        }
+        let actual: Sha256Digest = self.hasher.finalize_reset().into();
+        if actual != self.expected {
+            return Err(StoreError(
+                "frame digest does not match announcement".to_owned(),
+            ));
+        }
+        if let Some(file) = self.file.take() {
+            file.sync_all()?;
+            drop(file);
+            let metadata = fs::metadata(&self.temporary)?;
+            if metadata.len() != FRAME_BYTES as u64 {
+                return Err(StoreError("temporary frame verification failed".to_owned()));
+            }
+            fs::rename(&self.temporary, &self.final_path)?;
+        }
+        Ok(actual)
+    }
+}
+
+impl Drop for FrameWriter {
+    fn drop(&mut self) {
+        let _ = self.file.take();
+        let _ = fs::remove_file(&self.temporary);
     }
 }
 

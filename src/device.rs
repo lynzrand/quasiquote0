@@ -2,7 +2,9 @@
 
 use crate::config::Config;
 use crate::frame::{digest_hex, Frame, Sha256Digest};
-use crate::store::{DesiredFrame, DeviceState as PersistentState, FrameMeta, Store, StoreError};
+use crate::store::{
+    DesiredFrame, DeviceState as PersistentState, FrameMeta, FrameWriter, Store, StoreError,
+};
 use core::fmt;
 
 pub struct Device {
@@ -82,6 +84,25 @@ impl Device {
         });
         self.store.save_state(&self.state)?;
         Ok(digest)
+    }
+
+    pub fn begin_frame_write(&self, expected: Sha256Digest) -> Result<FrameWriter, DeviceError> {
+        self.store.begin_frame_write(expected).map_err(Into::into)
+    }
+
+    /// Point durable state at a frame after its writer has verified and
+    /// atomically published the content-addressed file.
+    pub fn commit_frame(
+        &mut self,
+        digest: Sha256Digest,
+        meta: FrameMeta,
+    ) -> Result<(), DeviceError> {
+        self.state.desired = Some(DesiredFrame {
+            sha256: digest_hex(&digest),
+            meta,
+        });
+        self.store.save_state(&self.state)?;
+        Ok(())
     }
 
     pub fn load_desired_frame(&self) -> Result<Option<Frame>, DeviceError> {
