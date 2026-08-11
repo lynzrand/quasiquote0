@@ -7,7 +7,7 @@ use quasiquote0::bluetooth::Bluetooth;
 use quasiquote0::display::{Epd, EpdPins, Frame};
 use quasiquote0::jsonrpc;
 use quasiquote0::usb_serial::UsbSerial;
-use quasiquote0::yamux::Yamux;
+use quasiquote0::yamux::{Mode, Yamux};
 use quasiquote0::{battery, link_patches, status_screen, wifi::WifiStation};
 
 fn main() {
@@ -58,6 +58,6 @@ fn main() {
         .expect("initial status display refresh failed");
 
     let usb = UsbSerial::new(usb_serial, pins.gpio18, pins.gpio19).expect("USB setup failed");
-    let mut yamux = Yamux::new(usb);
-    jsonrpc::serve(yamux.stream(0)).expect("stream-0 JSON-RPC failed");
+    let yamux = Yamux::start(usb, Mode::Server).expect("Yamux driver failed");
+    jsonrpc::serve(yamux.control_stream()).expect("stream-0 JSON-RPC failed");
 }

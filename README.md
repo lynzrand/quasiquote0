@@ -14,10 +14,10 @@ MindReset Quote/0 board.
 The default firmware renders the status screen once at boot, then creates a
 blocking Yamux session over USB Serial/JTAG. Quote/0's stream-0 extension
 carries newline-delimited JSON-RPC; `system.ping` is currently implemented.
-
-The default binary refreshes the EPD every ten seconds with Wi-Fi link, NimBLE
-host, USB-power, and battery ADC state. It does not configure Wi-Fi credentials
-or provide an application protocol.
+Each blocking stream has a 4 KiB receive queue by default, and the whole
+connection has a 4 KiB outbound queue. Readers, writers, and the USB driver
+task park on condition variables at those bounds, so Yamux's protocol-level
+256 KiB initial credit never implies a 256 KiB allocation on the device.
 
 ## Board invariant
 

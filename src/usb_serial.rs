@@ -15,7 +15,13 @@ pub struct UsbSerial<'d> {
 
 impl Read for UsbSerial<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.inner.read(buffer, BLOCK).map_err(to_io_error)
+        match self.inner.read(buffer, 50).map_err(to_io_error)? {
+            0 => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "USB read timeout",
+            )),
+            read => Ok(read),
+        }
     }
 }
 
