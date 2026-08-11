@@ -12,6 +12,9 @@ pub struct Device {
     store: Store,
     config: Config,
     state: PersistentState,
+    // Pull failures change far more often than the desired frame. Keep them
+    // in RAM so an outage cannot turn into avoidable LittleFS wear.
+    last_pull_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -34,12 +37,14 @@ impl From<StoreError> for DeviceError {
 impl Device {
     pub fn mount() -> Result<Self, DeviceError> {
         let store = Store::mount()?;
-        let config = store.load_config()?.unwrap_or_default();
+        let config = store.load_config_or_quarantine()?.unwrap_or_default();
         let state = store.load_state()?;
+        store.remove_unreferenced_frames(&state)?;
         Ok(Self {
             store,
             config,
             state,
+            last_pull_error: None,
         })
     }
 
@@ -53,6 +58,10 @@ impl Device {
 
     pub fn pull_snapshot(&self) -> (Config, PullValidators) {
         (self.config.clone(), self.state.pull.clone())
+    }
+
+    pub fn pull_error(&self) -> Option<&str> {
+        self.last_pull_error.as_deref()
     }
 
     pub fn filesystem_info(&self) -> Result<(usize, usize), DeviceError> {
@@ -76,6 +85,15 @@ impl Device {
         self.replace_config(config)
     }
 
+    /// Destructively reset application state while leaving the LittleFS
+    /// filesystem itself and all OTA slots intact.
+    pub fn factory_reset(&mut self) -> Result<(), DeviceError> {
+        self.store.factory_reset()?;
+        self.config = Config::default();
+        self.state = PersistentState::default();
+        Ok(())
+    }
+
     /// Make a complete, verified frame durable before pointing state at it.
     pub fn accept_frame(
         &mut self,
@@ -88,6 +106,7 @@ impl Device {
             meta,
         });
         self.store.save_state(&self.state)?;
+        self.store.remove_unreferenced_frames(&self.state)?;
         Ok(digest)
     }
 
@@ -113,6 +132,7 @@ impl Device {
             meta,
         });
         self.store.save_state(&self.state)?;
+        self.store.remove_unreferenced_frames(&self.state)?;
         Ok(())
     }
 
@@ -132,14 +152,21 @@ impl Device {
         self.state.pull.last_modified = last_modified;
         self.state.pull.last_success_ms = Some(now_ms);
         self.state.pull.last_error = None;
+        self.last_pull_error = None;
         self.store.save_state(&self.state)?;
+        self.store.remove_unreferenced_frames(&self.state)?;
         Ok(())
     }
 
     pub fn record_pull_error(&mut self, error: String) -> Result<(), DeviceError> {
-        self.state.pull.last_error = Some(error.chars().take(160).collect());
-        self.store.save_state(&self.state)?;
+        self.last_pull_error = Some(error.chars().take(160).collect());
         Ok(())
+    }
+
+    pub fn discard_unreferenced_frames(&self) -> Result<(), DeviceError> {
+        self.store
+            .remove_unreferenced_frames(&self.state)
+            .map_err(Into::into)
     }
 
     pub fn load_desired_frame(&self) -> Result<Option<Frame>, DeviceError> {

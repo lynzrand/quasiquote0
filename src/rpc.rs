@@ -7,20 +7,89 @@ use crate::store::{DesiredFrame, FrameMeta};
 use crate::yamux::{Yamux, YamuxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
 static FRAME_UPLOAD_RUNNING: AtomicBool = AtomicBool::new(false);
 static OTA_RUNNING: AtomicBool = AtomicBool::new(false);
+pub static PULL_REQUESTED: AtomicBool = AtomicBool::new(false);
+static NEXT_OPERATION_ID: AtomicU32 = AtomicU32::new(1);
+static OPERATIONS: OnceLock<Mutex<VecDeque<OperationStatus>>> = OnceLock::new();
+const OPERATION_HISTORY: usize = 8;
+
+#[derive(Clone, Serialize)]
+struct OperationStatus {
+    operation: u32,
+    kind: &'static str,
+    expected_bytes: usize,
+    received_bytes: usize,
+    state: &'static str,
+    error: Option<String>,
+}
+
+fn operations() -> &'static Mutex<VecDeque<OperationStatus>> {
+    OPERATIONS.get_or_init(|| Mutex::new(VecDeque::with_capacity(OPERATION_HISTORY)))
+}
+
+fn start_operation(kind: &'static str, expected_bytes: usize) -> u32 {
+    let operation = NEXT_OPERATION_ID.fetch_add(1, Ordering::Relaxed);
+    let mut operations = operations().lock().unwrap();
+    if operations.len() == OPERATION_HISTORY {
+        operations.pop_front();
+    }
+    operations.push_back(OperationStatus {
+        operation,
+        kind,
+        expected_bytes,
+        received_bytes: 0,
+        state: "receiving",
+        error: None,
+    });
+    operation
+}
+
+fn update_operation(operation: u32, received_bytes: usize) {
+    if let Some(entry) = operations()
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|entry| entry.operation == operation)
+    {
+        entry.received_bytes = received_bytes;
+    }
+}
+
+fn finish_operation(operation: u32, result: Result<(), String>) {
+    if let Some(entry) = operations()
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|entry| entry.operation == operation)
+    {
+        match result {
+            Ok(()) => {
+                entry.received_bytes = entry.expected_bytes;
+                entry.state = "complete";
+                entry.error = None;
+            }
+            Err(error) => {
+                entry.state = "failed";
+                entry.error = Some(error.chars().take(160).collect());
+            }
+        }
+    }
+}
 
 pub struct DeviceRpc {
     device: Arc<Mutex<Device>>,
     yamux: Yamux,
     reboot_requested: bool,
+    factory_reset_token: String,
 }
 
 /// USB-visible recovery mode. A damaged LittleFS volume is never silently
@@ -62,6 +131,7 @@ impl DeviceRpc {
             device,
             yamux,
             reboot_requested: false,
+            factory_reset_token: format!("{:08x}", unsafe { esp_idf_sys::esp_random() }),
         }
     }
 
@@ -92,13 +162,24 @@ impl DeviceRpc {
                     .map_err(device_error)?;
                 value(WifiClearResult { cleared: true })
             }
+            "pull.run" => {
+                if !self.device.lock().unwrap().config().pull.enabled {
+                    return Err(Error::invalid_params(
+                        "pull.run requires an enabled pull configuration",
+                    ));
+                }
+                PULL_REQUESTED.store(true, Ordering::SeqCst);
+                value(PullRunResult { scheduled: true })
+            }
             "frame.begin" => self.frame_begin(params),
+            "device.factoryReset" | "device.factory_reset" => self.factory_reset(params),
             "ota.begin" => self.ota_begin(params),
             "ota.status" => value(OtaStatusResult {
                 running_partition: crate::ota::running_partition_label(),
                 pending: self.device.lock().unwrap().state().ota_pending.clone(),
                 in_progress: OTA_RUNNING.load(Ordering::SeqCst),
             }),
+            "operation.status" => self.operation_status(params),
             "frame.metadata" | "frame.getMetadata" => value(self.frame_metadata()),
             "diagnostics.get" => value(self.diagnostics()?),
             _ => Err(Error::method_not_found()),
@@ -131,7 +212,7 @@ impl DeviceRpc {
                     device_selected_upload_streams: true,
                 },
                 network: NetworkCapabilities {
-                    pull: false,
+                    pull: true,
                     push: false,
                 },
             },
@@ -161,6 +242,15 @@ impl DeviceRpc {
                 displayed_content_sha256: state.displayed_content_sha256.clone(),
                 displayed_composed_sha256: state.displayed_composed_sha256.clone(),
             },
+            pull: PullStatus {
+                enabled: device.config().pull.enabled,
+                last_success_ms: state.pull.last_success_ms,
+                last_error: device
+                    .pull_error()
+                    .map(str::to_owned)
+                    .or_else(|| state.pull.last_error.clone()),
+            },
+            factory_reset_token: self.factory_reset_token.clone(),
         })
     }
 
@@ -169,7 +259,34 @@ impl DeviceRpc {
         let mut device = self.device.lock().unwrap();
         preserve_redacted_secrets(device.config(), &mut next);
         device.replace_config(next).map_err(device_error)?;
+        if device.config().pull.enabled {
+            // A newly saved endpoint should be checked now, not after the
+            // previous endpoint's retry deadline.
+            PULL_REQUESTED.store(true, Ordering::SeqCst);
+        }
         value(ConfigSetResult { accepted: true })
+    }
+
+    fn factory_reset(&mut self, params: &Value) -> Result<Value, Error> {
+        if FRAME_UPLOAD_RUNNING.load(Ordering::SeqCst) || OTA_RUNNING.load(Ordering::SeqCst) {
+            return Err(Error::invalid_params(
+                "cannot reset during an active upload",
+            ));
+        }
+        let params: FactoryResetParams = serde_json::from_value(params.clone())
+            .map_err(|error| Error::invalid_params(error.to_string()))?;
+        if params.confirmation_token.as_deref() != Some(&self.factory_reset_token) {
+            return Err(Error::invalid_params(
+                "factory reset confirmation token does not match",
+            ));
+        }
+        self.device
+            .lock()
+            .unwrap()
+            .factory_reset()
+            .map_err(device_error)?;
+        self.factory_reset_token = format!("{:08x}", unsafe { esp_idf_sys::esp_random() });
+        value(FactoryResetResult { reset: true })
     }
 
     fn frame_metadata(&self) -> FrameMetadataResult {
@@ -193,6 +310,18 @@ impl DeviceRpc {
         })
     }
 
+    fn operation_status(&self, params: &Value) -> Result<Value, Error> {
+        let params: OperationStatusParams = serde_json::from_value(params.clone())
+            .map_err(|error| Error::invalid_params(error.to_string()))?;
+        let operations = operations().lock().unwrap();
+        let operation = operations
+            .iter()
+            .find(|entry| entry.operation == params.operation)
+            .cloned()
+            .ok_or_else(|| Error::invalid_params("unknown operation"))?;
+        value(operation)
+    }
+
     fn frame_begin(&self, params: &Value) -> Result<Value, Error> {
         if FRAME_UPLOAD_RUNNING.swap(true, Ordering::SeqCst) {
             return Err(Error::invalid_params(
@@ -206,8 +335,10 @@ impl DeviceRpc {
         let expected = parse_sha256(&params.sha256).inspect_err(|_| {
             FRAME_UPLOAD_RUNNING.store(false, Ordering::SeqCst);
         })?;
+        let operation = start_operation("frame", crate::frame::FRAME_BYTES);
         let stream = self.yamux.open().map_err(|error| {
             FRAME_UPLOAD_RUNNING.store(false, Ordering::SeqCst);
+            finish_operation(operation, Err(error.to_string()));
             transport_error(error)
         })?;
         let stream_id = stream.id();
@@ -220,13 +351,15 @@ impl DeviceRpc {
         thread::Builder::new()
             .name("frame-upload".into())
             .stack_size(8 * 1024)
-            .spawn(move || receive_frame_upload(device, stream, expected, metadata))
+            .spawn(move || receive_frame_upload(device, stream, expected, metadata, operation))
             .map_err(|error| {
                 FRAME_UPLOAD_RUNNING.store(false, Ordering::SeqCst);
+                finish_operation(operation, Err(error.to_string()));
                 transport_error(error)
             })?;
         value(FrameBeginResult {
             stream: stream_id,
+            operation,
             expected_bytes: crate::frame::FRAME_BYTES,
         })
     }
@@ -248,8 +381,10 @@ impl DeviceRpc {
             OTA_RUNNING.store(false, Ordering::SeqCst);
             return Err(Error::invalid_params("bytes must be non-zero"));
         }
+        let operation = start_operation("ota", params.bytes);
         let stream = self.yamux.open().map_err(|error| {
             OTA_RUNNING.store(false, Ordering::SeqCst);
+            finish_operation(operation, Err(error.to_string()));
             transport_error(error)
         })?;
         let stream_id = stream.id();
@@ -258,14 +393,23 @@ impl DeviceRpc {
             .name("ota-upload".into())
             .stack_size(8 * 1024)
             .spawn(move || {
-                receive_ota_upload(device, stream, params.bytes, expected, params.version)
+                receive_ota_upload(
+                    device,
+                    stream,
+                    params.bytes,
+                    expected,
+                    params.version,
+                    operation,
+                )
             })
             .map_err(|error| {
                 OTA_RUNNING.store(false, Ordering::SeqCst);
+                finish_operation(operation, Err(error.to_string()));
                 transport_error(error)
             })?;
         value(OtaBeginResult {
             stream: stream_id,
+            operation,
             expected_bytes: params.bytes,
         })
     }
@@ -276,6 +420,7 @@ fn receive_frame_upload(
     mut stream: YamuxStream,
     expected: crate::frame::Sha256Digest,
     metadata: FrameMeta,
+    operation: u32,
 ) {
     let result = (|| -> Result<(), String> {
         let mut writer = device
@@ -297,6 +442,7 @@ fn receive_frame_upload(
                 .write_all(&buffer[..count])
                 .map_err(|error| error.to_string())?;
             remaining -= count;
+            update_operation(operation, crate::frame::FRAME_BYTES - remaining);
         }
         // Exact length is the end-of-upload marker. Do not wait for the host
         // to close; that lets a sender reuse its own scheduling independently.
@@ -311,6 +457,7 @@ fn receive_frame_upload(
     if result.is_err() {
         stream.close();
     }
+    finish_operation(operation, result);
     FRAME_UPLOAD_RUNNING.store(false, Ordering::SeqCst);
 }
 
@@ -320,9 +467,12 @@ fn receive_ota_upload(
     expected_bytes: usize,
     expected: crate::frame::Sha256Digest,
     version: Option<String>,
+    operation: u32,
 ) {
     let result = (|| -> Result<(), String> {
-        crate::ota::receive(&mut stream, expected_bytes, expected)?;
+        crate::ota::receive_with_progress(&mut stream, expected_bytes, expected, |received| {
+            update_operation(operation, received)
+        })?;
         // Exact length ended the receiver's work; do not wait for peer EOF.
         stream.close();
         device
@@ -333,7 +483,9 @@ fn receive_ota_upload(
         crate::ota::select_staged_partition()?;
         Ok(())
     })();
-    if result.is_ok() {
+    let reboot = result.is_ok();
+    finish_operation(operation, result);
+    if reboot {
         // The response to `ota.begin` has already been flushed. Give queued
         // USB bytes a chance to leave before booting the selected slot.
         esp_idf_hal::delay::FreeRtos::delay_ms(250);
@@ -410,6 +562,19 @@ struct OtaBeginParams {
     sha256: String,
     #[serde(default)]
     version: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperationStatusParams {
+    operation: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FactoryResetParams {
+    #[serde(rename = "confirmationToken")]
+    confirmation_token: Option<String>,
 }
 
 fn parse_config(params: &Value) -> Result<Config, Error> {
@@ -530,6 +695,16 @@ struct WifiClearResult {
 }
 
 #[derive(Serialize)]
+struct PullRunResult {
+    scheduled: bool,
+}
+
+#[derive(Serialize)]
+struct FactoryResetResult {
+    reset: bool,
+}
+
+#[derive(Serialize)]
 struct StatusResult {
     protocol: u32,
     firmware: &'static str,
@@ -537,6 +712,8 @@ struct StatusResult {
     battery: BatteryStatus,
     filesystem: FilesystemStatus,
     display: DisplayStatus,
+    pull: PullStatus,
+    factory_reset_token: String,
 }
 
 #[derive(Serialize)]
@@ -560,6 +737,13 @@ struct DisplayStatus {
 }
 
 #[derive(Serialize)]
+struct PullStatus {
+    enabled: bool,
+    last_success_ms: Option<u64>,
+    last_error: Option<String>,
+}
+
+#[derive(Serialize)]
 struct FrameMetadataResult {
     desired: Option<DesiredFrame>,
     displayed_content_sha256: Option<String>,
@@ -569,12 +753,14 @@ struct FrameMetadataResult {
 #[derive(Serialize)]
 struct FrameBeginResult {
     stream: u32,
+    operation: u32,
     expected_bytes: usize,
 }
 
 #[derive(Serialize)]
 struct OtaBeginResult {
     stream: u32,
+    operation: u32,
     expected_bytes: usize,
 }
 

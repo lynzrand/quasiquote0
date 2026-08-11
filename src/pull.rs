@@ -4,7 +4,7 @@ use crate::config::PullConfig;
 use crate::store::PullValidators;
 use core::time::Duration;
 use embedded_svc::http::Method;
-use esp_idf_svc::http::client::{Configuration, EspHttpConnection};
+use esp_idf_svc::http::client::{Configuration, EspHttpConnection, FollowRedirectsPolicy};
 use std::io::Write;
 
 pub struct Response {
@@ -28,6 +28,9 @@ pub fn fetch(
         } else {
             None
         },
+        // Redirects would need an explicit scheme/host policy. Treat every
+        // redirect as a rejected server response until that policy exists.
+        follow_redirects_policy: FollowRedirectsPolicy::FollowNone,
         ..Default::default()
     };
     let mut connection =

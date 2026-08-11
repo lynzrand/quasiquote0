@@ -135,6 +135,20 @@ impl Store {
         Ok(config)
     }
 
+    /// A configuration is replaceable state, not a reason to strand a device
+    /// in recovery. Preserve an invalid document for inspection and continue
+    /// with the safe, unconfigured default instead. Mount/IO failures still
+    /// propagate because formatting or guessing would risk the valid frame.
+    pub fn load_config_or_quarantine(&self) -> Result<Option<Config>, StoreError> {
+        match self.load_config() {
+            Ok(config) => Ok(config),
+            Err(_) => {
+                self.quarantine(CONFIG_PATH)?;
+                Ok(None)
+            }
+        }
+    }
+
     pub fn save_config(&self, config: &Config) -> Result<(), StoreError> {
         config
             .validate()
@@ -146,12 +160,53 @@ impl Store {
         self.remove_optional(CONFIG_PATH)
     }
 
+    /// Remove only application-owned state. The mounted volume and both OTA
+    /// application slots are deliberately left alone.
+    pub fn factory_reset(&self) -> Result<(), StoreError> {
+        self.clear_config()?;
+        self.remove_optional(STATE_PATH)?;
+        for entry in fs::read_dir(self.path(FRAME_DIRECTORY))? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                fs::remove_file(entry.path())?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn load_state(&self) -> Result<DeviceState, StoreError> {
-        let state: DeviceState = self.read_json_optional(STATE_PATH)?.unwrap_or_default();
+        let state: DeviceState = match self.read_json_optional(STATE_PATH)? {
+            Some(state) => state,
+            // A derived `Default` would carry `schema: 0` and strand every
+            // freshly formatted volume in recovery mode.
+            None => DeviceState {
+                schema: state_schema(),
+                ..DeviceState::default()
+            },
+        };
         if state.schema != state_schema() {
             return Err(StoreError("unsupported device-state schema".to_owned()));
         }
         Ok(state)
+    }
+
+    /// Delete immutable content only after a durable state document identifies
+    /// its replacement. This also collects complete but unreferenced files
+    /// left by a rejected HTTP digest or a power loss after frame publication.
+    pub fn remove_unreferenced_frames(&self, state: &DeviceState) -> Result<(), StoreError> {
+        let retained = state.desired.as_ref().map(|desired| {
+            self.path(&format!("{FRAME_DIRECTORY}/{}.bin", desired.sha256))
+        });
+        for entry in fs::read_dir(self.path(FRAME_DIRECTORY))? {
+            let entry = entry?;
+            if entry.file_type()?.is_file()
+                && entry.path().extension().is_some_and(|extension| extension == "bin")
+                && retained.as_ref() != Some(&entry.path())
+            {
+                fs::remove_file(entry.path())?;
+            }
+        }
+        Ok(())
     }
 
     pub fn save_state(&self, state: &DeviceState) -> Result<(), StoreError> {
@@ -282,6 +337,21 @@ impl Store {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
         }
+    }
+
+    fn quarantine(&self, relative: &str) -> Result<(), StoreError> {
+        let original = self.path(relative);
+        if !original.exists() {
+            return Ok(());
+        }
+        for suffix in 0..100 {
+            let candidate = PathBuf::from(format!("{}.corrupt.{suffix}", original.display()));
+            if !candidate.exists() {
+                fs::rename(original, candidate)?;
+                return Ok(());
+            }
+        }
+        Err(StoreError("too many quarantined configuration files".to_owned()))
     }
 
     fn frame_path(&self, digest: &Sha256Digest) -> PathBuf {

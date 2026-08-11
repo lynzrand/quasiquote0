@@ -3,10 +3,10 @@
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use quasiquote0::bluetooth::Bluetooth;
 use quasiquote0::display::{Epd, EpdPins};
 use quasiquote0::frame::Projection;
 use quasiquote0::jsonrpc;
+use quasiquote0::pull_schedule::PullSchedule;
 use quasiquote0::rpc::ControlRpc;
 use quasiquote0::status_bar::{BatteryMarker, StatusBar, WifiMarker};
 use quasiquote0::usb_serial::UsbSerial;
@@ -27,30 +27,8 @@ fn main() {
         usb_serial,
         ..
     } = peripherals;
-    let mut display = Epd::new(
-        spi2,
-        pins.gpio10,
-        pins.gpio7,
-        EpdPins {
-            busy: pins.gpio3,
-            reset: pins.gpio4,
-            data_command: pins.gpio5,
-            chip_select: pins.gpio6,
-            power: pins.gpio20,
-        },
-    )
-    .expect("EPD setup failed");
-
-    let wifi = EspSystemEventLoop::take()
-        .ok()
-        .and_then(|event_loop| {
-            EspDefaultNvsPartition::take()
-                .ok()
-                .map(|nvs| (event_loop, nvs))
-        })
-        .and_then(|(event_loop, nvs)| WifiStation::new(modem, event_loop, Some(nvs)).ok());
-    let bluetooth = Bluetooth::start().ok();
-
+    // USB must become usable before optional display/radio setup. This keeps
+    // recovery and configuration available if either later subsystem fails.
     let usb = UsbSerial::new(usb_serial, pins.gpio18, pins.gpio19).expect("USB setup failed");
     let yamux = Yamux::start(usb, Mode::Server).expect("Yamux driver failed");
     let mut rpc = ControlRpc::mount(yamux.clone());
@@ -68,27 +46,44 @@ fn main() {
         })
         .expect("USB control task failed");
 
-    run_display_loop(
-        &mut display,
-        device,
-        wifi,
-        wifi_marker,
-        bluetooth.as_ref().is_some_and(Bluetooth::is_ready),
-    );
+    let mut display = Epd::new(
+        spi2,
+        pins.gpio10,
+        pins.gpio7,
+        EpdPins {
+            busy: pins.gpio3,
+            reset: pins.gpio4,
+            data_command: pins.gpio5,
+            chip_select: pins.gpio6,
+            power: pins.gpio20,
+        },
+    )
+    .ok();
+    let wifi = EspSystemEventLoop::take()
+        .ok()
+        .and_then(|event_loop| {
+            EspDefaultNvsPartition::take()
+                .ok()
+                .map(|nvs| (event_loop, nvs))
+        })
+        .and_then(|(event_loop, nvs)| WifiStation::new(modem, event_loop, Some(nvs)).ok());
+    // Bluetooth provisioning/advertising is intentionally outside the first
+    // release. Do not start NimBLE before the USB recovery/control service.
+    run_display_loop(display.as_mut(), device, wifi, wifi_marker, false);
 }
 
 fn run_display_loop(
-    display: &mut Epd<'_>,
+    mut display: Option<&mut Epd<'_>>,
     device: Arc<Mutex<quasiquote0::device::Device>>,
     mut wifi: Option<WifiStation<'_>>,
     wifi_marker: Arc<Mutex<Option<WifiMarker>>>,
     bluetooth_present: bool,
 ) -> ! {
-    let mut last_pull_ms = 0;
+    let mut pull_schedule = PullSchedule::default();
     loop {
         let now_ms = (unsafe { esp_idf_sys::esp_timer_get_time() } / 1_000) as u64;
         if let Some(wifi) = wifi.as_mut() {
-            run_scheduled_pull(&device, wifi, &wifi_marker, now_ms, &mut last_pull_ms);
+            run_scheduled_pull(&device, wifi, &wifi_marker, now_ms, &mut pull_schedule);
         }
         let candidate = {
             let device = device.lock().unwrap();
@@ -106,7 +101,8 @@ fn run_display_loop(
                 _ => None,
             }
         };
-        if let Some((mut frame, status_bar)) = candidate {
+        if let (Some(display), Some((mut frame, status_bar))) = (display.as_deref_mut(), candidate)
+        {
             let content = frame.sha256();
             if status_bar {
                 let battery = battery::read();
@@ -138,17 +134,14 @@ fn run_scheduled_pull(
     wifi: &mut WifiStation<'_>,
     wifi_marker: &Arc<Mutex<Option<WifiMarker>>>,
     now_ms: u64,
-    last_pull_ms: &mut u64,
+    schedule: &mut PullSchedule,
 ) {
     let (config, validators) = device.lock().unwrap().pull_snapshot();
-    if !config.pull.enabled
-        || (*last_pull_ms != 0
-            && now_ms.saturating_sub(*last_pull_ms)
-                < config.pull.interval_seconds.saturating_mul(1_000))
-    {
+    let requested =
+        quasiquote0::rpc::PULL_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst);
+    if !config.pull.enabled || !schedule.is_due(now_ms, requested) {
         return;
     }
-    *last_pull_ms = now_ms;
     *wifi_marker.lock().unwrap() = Some(WifiMarker::Connecting);
     let result = (|| -> Result<(), String> {
         wifi.configure(&config.wifi.ssid, &config.wifi.password)?;
@@ -172,6 +165,7 @@ fn run_scheduled_pull(
                     .as_deref()
                     .is_some_and(|value| value != quasiquote0::frame::digest_hex(&digest))
                 {
+                    let _ = device.lock().unwrap().discard_unreferenced_frames();
                     return Err("X-Frame-SHA256 does not match response body".to_owned());
                 }
                 device
@@ -195,8 +189,12 @@ fn run_scheduled_pull(
         }
     })();
     match result {
-        Ok(()) => *wifi_marker.lock().unwrap() = Some(WifiMarker::Connected),
+        Ok(()) => {
+            schedule.succeeded(now_ms, config.pull.interval_seconds);
+            *wifi_marker.lock().unwrap() = Some(WifiMarker::Connected);
+        }
         Err(error) => {
+            schedule.failed(now_ms);
             *wifi_marker.lock().unwrap() = Some(WifiMarker::Failed);
             let _ = device.lock().unwrap().record_pull_error(error);
         }

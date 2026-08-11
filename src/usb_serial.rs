@@ -41,6 +41,9 @@ fn to_io_error(error: EspError) -> io::Error {
 
 impl<'d> UsbSerial<'d> {
     pub fn new(port: USB_SERIAL<'d>, dm: Gpio18<'d>, dp: Gpio19<'d>) -> Result<Self, EspError> {
+        // The hardware receives 64-byte endpoint packets, while ESP-IDF's
+        // byte-ring driver requires an RX buffer *larger* than one packet.
+        // Yamux provides the higher-level bounded receive window.
         let config = UsbSerialConfig::new()
             .tx_buffer_size(2048)
             .rx_buffer_size(2048);

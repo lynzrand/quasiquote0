@@ -2,6 +2,10 @@
 # console claim it; USB Serial/JTAG (GPIO18/19) is the host transport.
 CONFIG_ESP_CONSOLE_NONE=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# USB Serial/JTAG carries framed Yamux, not a console. Suppress even the
+# pre-application bootloader chatter so a host never mistakes text for a frame.
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
+CONFIG_LOG_DEFAULT_LEVEL_NONE=y
 CONFIG_ESP_WIFI_ENABLED=y
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
@@ -17,7 +21,12 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # Rust often needs a bit of an extra main task stack size compared to C (the default is 3K)
 # You might have to increase this further if you allocate large stack variables in the main task
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+# `run_display_loop` holds a canonical Frame plus its projected
+# ControllerFrame (~11.3 KiB of pixel buffers alone) as locals, and debug
+# builds additionally materialize full-frame temporaries inside
+# `Frame::from_bytes`/`project`. Give the main task real headroom until the
+# pixel paths are moved onto the heap.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=65536
 
 # Increase a bit these stack sizes as they are also a bit too small by default
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096

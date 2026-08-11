@@ -15,6 +15,17 @@ pub fn receive(
     expected_bytes: usize,
     expected_digest: Sha256Digest,
 ) -> Result<(), String> {
+    receive_with_progress(stream, expected_bytes, expected_digest, |_| {})
+}
+
+/// As [`receive`], but report bytes committed to the inactive OTA partition
+/// after each bounded write. The callback must be short and non-blocking.
+pub fn receive_with_progress(
+    stream: &mut impl Read,
+    expected_bytes: usize,
+    expected_digest: Sha256Digest,
+    mut progress: impl FnMut(usize),
+) -> Result<(), String> {
     if expected_bytes == 0 {
         return Err("OTA image length must be non-zero".to_owned());
     }
@@ -27,7 +38,7 @@ pub fn receive(
     esp_idf_sys::esp!(unsafe { esp_idf_sys::esp_ota_begin(target, expected_bytes, &mut handle) })
         .map_err(|error| error.to_string())?;
 
-    let result = receive_inner(stream, expected_bytes, expected_digest, handle);
+    let result = receive_inner(stream, expected_bytes, expected_digest, handle, &mut progress);
     match result {
         Ok(()) => esp_idf_sys::esp!(unsafe { esp_idf_sys::esp_ota_end(handle) })
             .map_err(|error| error.to_string()),
@@ -54,6 +65,7 @@ fn receive_inner(
     expected_bytes: usize,
     expected_digest: Sha256Digest,
     handle: esp_idf_sys::esp_ota_handle_t,
+    progress: &mut impl FnMut(usize),
 ) -> Result<(), String> {
     let mut remaining = expected_bytes;
     let mut hasher = Sha256::new();
@@ -72,6 +84,7 @@ fn receive_inner(
         .map_err(|error| error.to_string())?;
         hasher.update(&buffer[..count]);
         remaining -= count;
+        progress(expected_bytes - remaining);
     }
     let actual: Sha256Digest = hasher.finalize().into();
     if actual != expected_digest {
