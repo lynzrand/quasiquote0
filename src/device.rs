@@ -3,7 +3,8 @@
 use crate::config::Config;
 use crate::frame::{digest_hex, Frame, Sha256Digest};
 use crate::store::{
-    DesiredFrame, DeviceState as PersistentState, FrameMeta, FrameWriter, Store, StoreError,
+    DesiredFrame, DeviceState as PersistentState, FrameMeta, FrameWriter, PullValidators, Store,
+    StoreError,
 };
 use core::fmt;
 
@@ -50,6 +51,10 @@ impl Device {
         &self.state
     }
 
+    pub fn pull_snapshot(&self) -> (Config, PullValidators) {
+        (self.config.clone(), self.state.pull.clone())
+    }
+
     pub fn filesystem_info(&self) -> Result<(usize, usize), DeviceError> {
         self.store.info().map_err(Into::into)
     }
@@ -90,6 +95,12 @@ impl Device {
         self.store.begin_frame_write(expected).map_err(Into::into)
     }
 
+    pub fn begin_unannounced_frame_write(&self) -> Result<FrameWriter, DeviceError> {
+        self.store
+            .begin_unannounced_frame_write()
+            .map_err(Into::into)
+    }
+
     /// Point durable state at a frame after its writer has verified and
     /// atomically published the content-addressed file.
     pub fn commit_frame(
@@ -101,6 +112,32 @@ impl Device {
             sha256: digest_hex(&digest),
             meta,
         });
+        self.store.save_state(&self.state)?;
+        Ok(())
+    }
+
+    pub fn commit_pulled_frame(
+        &mut self,
+        digest: Sha256Digest,
+        meta: FrameMeta,
+        etag: Option<String>,
+        last_modified: Option<String>,
+        now_ms: u64,
+    ) -> Result<(), DeviceError> {
+        self.state.desired = Some(DesiredFrame {
+            sha256: digest_hex(&digest),
+            meta,
+        });
+        self.state.pull.etag = etag;
+        self.state.pull.last_modified = last_modified;
+        self.state.pull.last_success_ms = Some(now_ms);
+        self.state.pull.last_error = None;
+        self.store.save_state(&self.state)?;
+        Ok(())
+    }
+
+    pub fn record_pull_error(&mut self, error: String) -> Result<(), DeviceError> {
+        self.state.pull.last_error = Some(error.chars().take(160).collect());
         self.store.save_state(&self.state)?;
         Ok(())
     }

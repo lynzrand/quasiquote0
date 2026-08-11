@@ -10,6 +10,7 @@ use quasiquote0::jsonrpc;
 use quasiquote0::rpc::ControlRpc;
 use quasiquote0::status_bar::{BatteryMarker, StatusBar};
 use quasiquote0::usb_serial::UsbSerial;
+use quasiquote0::wifi::WifiStation;
 use quasiquote0::yamux::{Mode, Yamux};
 use quasiquote0::{battery, link_patches};
 use std::sync::{Arc, Mutex};
@@ -22,7 +23,7 @@ fn main() {
     let Peripherals {
         pins,
         spi2,
-        modem: _,
+        modem,
         usb_serial,
         ..
     } = peripherals;
@@ -40,10 +41,14 @@ fn main() {
     )
     .expect("EPD setup failed");
 
-    // Reserve the IDF system singletons now; the pull worker owns actual
-    // station setup once a persistent Wi-Fi configuration is present.
-    let _event_loop = EspSystemEventLoop::take();
-    let _nvs = EspDefaultNvsPartition::take();
+    let wifi = EspSystemEventLoop::take()
+        .ok()
+        .and_then(|event_loop| {
+            EspDefaultNvsPartition::take()
+                .ok()
+                .map(|nvs| (event_loop, nvs))
+        })
+        .and_then(|(event_loop, nvs)| WifiStation::new(modem, event_loop, Some(nvs)).ok());
     let bluetooth = Bluetooth::start().ok();
 
     let usb = UsbSerial::new(usb_serial, pins.gpio18, pins.gpio19).expect("USB setup failed");
@@ -65,6 +70,7 @@ fn main() {
     run_display_loop(
         &mut display,
         device,
+        wifi,
         bluetooth.as_ref().is_some_and(Bluetooth::is_ready),
     );
 }
@@ -72,9 +78,15 @@ fn main() {
 fn run_display_loop(
     display: &mut Epd<'_>,
     device: Arc<Mutex<quasiquote0::device::Device>>,
+    mut wifi: Option<WifiStation<'_>>,
     bluetooth_present: bool,
 ) -> ! {
+    let mut last_pull_ms = 0;
     loop {
+        let now_ms = (unsafe { esp_idf_sys::esp_timer_get_time() } / 1_000) as u64;
+        if let Some(wifi) = wifi.as_mut() {
+            run_scheduled_pull(&device, wifi, now_ms, &mut last_pull_ms);
+        }
         let candidate = {
             let device = device.lock().unwrap();
             match device.state().desired.as_ref() {
@@ -115,5 +127,67 @@ fn run_display_loop(
             }
         }
         esp_idf_hal::delay::FreeRtos::delay_ms(1_000);
+    }
+}
+
+fn run_scheduled_pull(
+    device: &Arc<Mutex<quasiquote0::device::Device>>,
+    wifi: &mut WifiStation<'_>,
+    now_ms: u64,
+    last_pull_ms: &mut u64,
+) {
+    let (config, validators) = device.lock().unwrap().pull_snapshot();
+    if !config.pull.enabled
+        || now_ms.saturating_sub(*last_pull_ms) < config.pull.interval_seconds.saturating_mul(1_000)
+    {
+        return;
+    }
+    *last_pull_ms = now_ms;
+    let result = (|| -> Result<(), String> {
+        wifi.configure(&config.wifi.ssid, &config.wifi.password)?;
+        let _ = wifi.start();
+        let _ = wifi.connect();
+        esp_idf_hal::delay::FreeRtos::delay_ms(5_000);
+        if !wifi.is_up().map_err(|error| error.to_string())? {
+            return Err("Wi-Fi did not obtain an IP address".to_owned());
+        }
+        let mut writer = device
+            .lock()
+            .unwrap()
+            .begin_unannounced_frame_write()
+            .map_err(|error| error.to_string())?;
+        let response = quasiquote0::pull::fetch(&config.pull, &validators, &mut writer)?;
+        match response.status {
+            200 => {
+                let digest = writer.finish().map_err(|error| error.to_string())?;
+                if response
+                    .announced_sha256
+                    .as_deref()
+                    .is_some_and(|value| value != quasiquote0::frame::digest_hex(&digest))
+                {
+                    return Err("X-Frame-SHA256 does not match response body".to_owned());
+                }
+                device
+                    .lock()
+                    .unwrap()
+                    .commit_pulled_frame(
+                        digest,
+                        quasiquote0::store::FrameMeta {
+                            generation: response.etag.clone().unwrap_or_default(),
+                            source: "http-pull".to_owned(),
+                            accepted_at_ms: now_ms,
+                        },
+                        response.etag,
+                        response.last_modified,
+                        now_ms,
+                    )
+                    .map_err(|error| error.to_string())
+            }
+            204 | 304 => Ok(()),
+            status => Err(format!("HTTP pull returned status {status}")),
+        }
+    })();
+    if let Err(error) = result {
+        let _ = device.lock().unwrap().record_pull_error(error);
     }
 }

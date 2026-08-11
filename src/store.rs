@@ -100,8 +100,8 @@ unsafe impl Send for Store {}
 /// verifies both the exact canonical size and caller-announced digest.
 pub struct FrameWriter {
     temporary: PathBuf,
-    final_path: PathBuf,
-    expected: Sha256Digest,
+    final_path: Option<PathBuf>,
+    expected: Option<Sha256Digest>,
     file: Option<File>,
     hasher: Sha256,
     written: usize,
@@ -173,14 +173,28 @@ impl Store {
 
     /// Start an atomic, bounded write for a content-addressed canonical frame.
     pub fn begin_frame_write(&self, expected: Sha256Digest) -> Result<FrameWriter, StoreError> {
-        let final_path = self.frame_path(&expected);
-        let temporary = PathBuf::from(format!("{}.new", final_path.display()));
+        self.begin_frame_write_inner(Some(expected))
+    }
+
+    pub fn begin_unannounced_frame_write(&self) -> Result<FrameWriter, StoreError> {
+        self.begin_frame_write_inner(None)
+    }
+
+    fn begin_frame_write_inner(
+        &self,
+        expected: Option<Sha256Digest>,
+    ) -> Result<FrameWriter, StoreError> {
+        let final_path = expected.map(|digest| self.frame_path(&digest));
+        let temporary = final_path
+            .as_ref()
+            .map(|path| PathBuf::from(format!("{}.new", path.display())))
+            .unwrap_or_else(|| self.path(&format!("{FRAME_DIRECTORY}/http-pull.bin.new")));
         match fs::remove_file(&temporary) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        let file = if final_path.exists() {
+        let file = if final_path.as_ref().is_some_and(|path| path.exists()) {
             None
         } else {
             Some(
@@ -315,11 +329,15 @@ impl FrameWriter {
             return Err(StoreError("frame has incorrect length".to_owned()));
         }
         let actual: Sha256Digest = self.hasher.finalize_reset().into();
-        if actual != self.expected {
+        if self.expected.is_some_and(|expected| actual != expected) {
             return Err(StoreError(
                 "frame digest does not match announcement".to_owned(),
             ));
         }
+        let final_path = self.final_path.take().unwrap_or_else(|| {
+            self.temporary
+                .with_file_name(format!("{}.bin", digest_hex(&actual)))
+        });
         if let Some(file) = self.file.take() {
             file.sync_all()?;
             drop(file);
@@ -327,7 +345,11 @@ impl FrameWriter {
             if metadata.len() != FRAME_BYTES as u64 {
                 return Err(StoreError("temporary frame verification failed".to_owned()));
             }
-            fs::rename(&self.temporary, &self.final_path)?;
+            if final_path.exists() {
+                fs::remove_file(&self.temporary)?;
+            } else {
+                fs::rename(&self.temporary, final_path)?;
+            }
         }
         Ok(actual)
     }
