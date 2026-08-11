@@ -6,10 +6,14 @@
 
 pub mod battery;
 pub mod bluetooth;
+pub mod config;
 pub mod display;
 pub mod embedded_graphics;
+pub mod frame;
 pub mod jsonrpc;
 pub mod status_screen;
+pub mod status_bar;
+pub mod store;
 pub mod usb_serial;
 pub mod wifi;
 pub mod yamux;
