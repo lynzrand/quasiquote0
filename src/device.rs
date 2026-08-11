@@ -132,6 +132,21 @@ impl Device {
         self.store.save_state(&self.state)?;
         Ok(())
     }
+
+    pub fn mark_ota_pending(&mut self, version: Option<String>) -> Result<(), DeviceError> {
+        self.state.ota_pending = Some(version.unwrap_or_else(|| "pending".to_owned()));
+        self.store.save_state(&self.state)?;
+        Ok(())
+    }
+
+    pub fn confirm_ota(&mut self) -> Result<(), DeviceError> {
+        if self.state.ota_pending.is_some() {
+            crate::ota::confirm_running_image().map_err(DeviceError)?;
+            self.state.ota_pending = None;
+            self.store.save_state(&self.state)?;
+        }
+        Ok(())
+    }
 }
 
 fn parse_digest(value: &str) -> Result<Sha256Digest, DeviceError> {

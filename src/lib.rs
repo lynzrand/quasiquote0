@@ -12,6 +12,7 @@ pub mod display;
 pub mod embedded_graphics;
 pub mod frame;
 pub mod jsonrpc;
+pub mod ota;
 pub mod rpc;
 pub mod status_bar;
 pub mod status_icons;

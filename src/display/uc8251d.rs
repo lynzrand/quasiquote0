@@ -232,17 +232,47 @@ impl<'d> Epd<'d> {
     }
 
     /// Send a complete native Quote/0 framebuffer and wait for its refresh.
+    ///
+    /// The panel's serial data polarity is the inverse of the public frame
+    /// convention.  DTM1 must be all zeroes (not 0xff): on this UC8251D board
+    /// the latter produces alternating blank refreshes and can leave BUSY
+    /// asserted.  Chunks follow the actual frame length, including its final
+    /// 248-byte tail; sending a full 256-byte tail corrupts the next command.
     pub fn display(&mut self, frame: &Frame) -> Result<(), &'static str> {
         self.power_on()?;
-        let white = [0xff; 256];
-        self.command(0x10); // old image = white (the verified stock path)
-        for _ in (0..FRAME_BYTES).step_by(white.len()) {
-            self.data(&white);
+        let old = [0u8; 256];
+        self.command(0x10); // old image = electrically white
+        for chunk in frame.as_bytes().chunks(old.len()) {
+            self.data(&old[..chunk.len()]);
         }
         self.command(0x13);
-        self.data(frame.as_bytes());
+        let mut inverted = [0u8; 256];
+        for chunk in frame.as_bytes().chunks(inverted.len()) {
+            for (output, input) in inverted.iter_mut().zip(chunk) {
+                *output = !input;
+            }
+            self.data(&inverted[..chunk.len()]);
+        }
         self.command(0x12);
         FreeRtos::delay_ms(100);
-        self.wait_idle(12_000)
+        self.wait_idle(12_000)?;
+        self.sleep()
+    }
+
+    /// Power down the controller after a completed refresh. The panel retains
+    /// its image; the next display runs the full board-proven init sequence.
+    pub fn sleep(&mut self) -> Result<(), &'static str> {
+        if self.sleeping {
+            return Ok(());
+        }
+        self.command(0x02);
+        self.data(&[0x00]);
+        self.wait_idle(5_000)?;
+        self.command(0x07);
+        self.data(&[0xa5]);
+        FreeRtos::delay_ms(100);
+        self.power.set_low().map_err(|_| "EPD power pin error")?;
+        self.sleeping = true;
+        Ok(())
     }
 }

@@ -8,10 +8,14 @@ use crate::yamux::{Yamux, YamuxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 pub const PROTOCOL_VERSION: u32 = 1;
+
+static FRAME_UPLOAD_RUNNING: AtomicBool = AtomicBool::new(false);
+static OTA_RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub struct DeviceRpc {
     device: Arc<Mutex<Device>>,
@@ -30,10 +34,24 @@ pub enum ControlRpc {
 impl ControlRpc {
     pub fn mount(yamux: Yamux) -> Self {
         match Device::mount() {
-            Ok(device) => Self::Ready(DeviceRpc::new(Arc::new(Mutex::new(device)), yamux)),
+            Ok(mut device) => match device.confirm_ota() {
+                Ok(()) => Self::Ready(DeviceRpc::new(Arc::new(Mutex::new(device)), yamux)),
+                Err(error) => Self::Recovery {
+                    error: error.to_string(),
+                },
+            },
             Err(error) => Self::Recovery {
                 error: error.to_string(),
             },
+        }
+    }
+
+    /// Shared durable state for the single display/pull owner. It is absent in
+    /// recovery mode, where LittleFS must not be touched further.
+    pub fn device_handle(&self) -> Option<Arc<Mutex<Device>>> {
+        match self {
+            Self::Ready(rpc) => Some(rpc.device.clone()),
+            Self::Recovery { .. } => None,
         }
     }
 }
@@ -75,6 +93,12 @@ impl DeviceRpc {
                 value(WifiClearResult { cleared: true })
             }
             "frame.begin" => self.frame_begin(params),
+            "ota.begin" => self.ota_begin(params),
+            "ota.status" => value(OtaStatusResult {
+                running_partition: crate::ota::running_partition_label(),
+                pending: self.device.lock().unwrap().state().ota_pending.clone(),
+                in_progress: OTA_RUNNING.load(Ordering::SeqCst),
+            }),
             "frame.metadata" | "frame.getMetadata" => value(self.frame_metadata()),
             "diagnostics.get" => value(self.diagnostics()?),
             _ => Err(Error::method_not_found()),
@@ -170,10 +194,22 @@ impl DeviceRpc {
     }
 
     fn frame_begin(&self, params: &Value) -> Result<Value, Error> {
-        let params: FrameBeginParams = serde_json::from_value(params.clone())
-            .map_err(|error| Error::invalid_params(error.to_string()))?;
-        let expected = parse_sha256(&params.sha256)?;
-        let stream = self.yamux.open().map_err(transport_error)?;
+        if FRAME_UPLOAD_RUNNING.swap(true, Ordering::SeqCst) {
+            return Err(Error::invalid_params(
+                "a frame upload is already in progress",
+            ));
+        }
+        let params: FrameBeginParams = serde_json::from_value(params.clone()).map_err(|error| {
+            FRAME_UPLOAD_RUNNING.store(false, Ordering::SeqCst);
+            Error::invalid_params(error.to_string())
+        })?;
+        let expected = parse_sha256(&params.sha256).inspect_err(|_| {
+            FRAME_UPLOAD_RUNNING.store(false, Ordering::SeqCst);
+        })?;
+        let stream = self.yamux.open().map_err(|error| {
+            FRAME_UPLOAD_RUNNING.store(false, Ordering::SeqCst);
+            transport_error(error)
+        })?;
         let stream_id = stream.id();
         let device = self.device.clone();
         let metadata = FrameMeta {
@@ -185,10 +221,52 @@ impl DeviceRpc {
             .name("frame-upload".into())
             .stack_size(8 * 1024)
             .spawn(move || receive_frame_upload(device, stream, expected, metadata))
-            .map_err(transport_error)?;
+            .map_err(|error| {
+                FRAME_UPLOAD_RUNNING.store(false, Ordering::SeqCst);
+                transport_error(error)
+            })?;
         value(FrameBeginResult {
             stream: stream_id,
             expected_bytes: crate::frame::FRAME_BYTES,
+        })
+    }
+
+    fn ota_begin(&self, params: &Value) -> Result<Value, Error> {
+        if OTA_RUNNING.swap(true, Ordering::SeqCst) {
+            return Err(Error::invalid_params(
+                "an OTA upload is already in progress",
+            ));
+        }
+        let params: OtaBeginParams = serde_json::from_value(params.clone()).map_err(|error| {
+            OTA_RUNNING.store(false, Ordering::SeqCst);
+            Error::invalid_params(error.to_string())
+        })?;
+        let expected = parse_sha256(&params.sha256).inspect_err(|_| {
+            OTA_RUNNING.store(false, Ordering::SeqCst);
+        })?;
+        if params.bytes == 0 {
+            OTA_RUNNING.store(false, Ordering::SeqCst);
+            return Err(Error::invalid_params("bytes must be non-zero"));
+        }
+        let stream = self.yamux.open().map_err(|error| {
+            OTA_RUNNING.store(false, Ordering::SeqCst);
+            transport_error(error)
+        })?;
+        let stream_id = stream.id();
+        let device = self.device.clone();
+        thread::Builder::new()
+            .name("ota-upload".into())
+            .stack_size(8 * 1024)
+            .spawn(move || {
+                receive_ota_upload(device, stream, params.bytes, expected, params.version)
+            })
+            .map_err(|error| {
+                OTA_RUNNING.store(false, Ordering::SeqCst);
+                transport_error(error)
+            })?;
+        value(OtaBeginResult {
+            stream: stream_id,
+            expected_bytes: params.bytes,
         })
     }
 }
@@ -233,6 +311,37 @@ fn receive_frame_upload(
     if result.is_err() {
         stream.close();
     }
+    FRAME_UPLOAD_RUNNING.store(false, Ordering::SeqCst);
+}
+
+fn receive_ota_upload(
+    device: Arc<Mutex<Device>>,
+    mut stream: YamuxStream,
+    expected_bytes: usize,
+    expected: crate::frame::Sha256Digest,
+    version: Option<String>,
+) {
+    let result = (|| -> Result<(), String> {
+        crate::ota::receive(&mut stream, expected_bytes, expected)?;
+        // Exact length ended the receiver's work; do not wait for peer EOF.
+        stream.close();
+        device
+            .lock()
+            .unwrap()
+            .mark_ota_pending(version)
+            .map_err(|error| error.to_string())?;
+        crate::ota::select_staged_partition()?;
+        Ok(())
+    })();
+    if result.is_ok() {
+        // The response to `ota.begin` has already been flushed. Give queued
+        // USB bytes a chance to leave before booting the selected slot.
+        esp_idf_hal::delay::FreeRtos::delay_ms(250);
+        unsafe { esp_idf_sys::esp_restart() };
+    } else {
+        stream.close();
+    }
+    OTA_RUNNING.store(false, Ordering::SeqCst);
 }
 
 impl Handler for DeviceRpc {
@@ -292,6 +401,15 @@ struct FrameBeginParams {
     source: Option<String>,
     #[serde(default)]
     accepted_at_ms: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OtaBeginParams {
+    bytes: usize,
+    sha256: String,
+    #[serde(default)]
+    version: Option<String>,
 }
 
 fn parse_config(params: &Value) -> Result<Config, Error> {
@@ -452,6 +570,19 @@ struct FrameMetadataResult {
 struct FrameBeginResult {
     stream: u32,
     expected_bytes: usize,
+}
+
+#[derive(Serialize)]
+struct OtaBeginResult {
+    stream: u32,
+    expected_bytes: usize,
+}
+
+#[derive(Serialize)]
+struct OtaStatusResult {
+    running_partition: Option<String>,
+    pending: Option<String>,
+    in_progress: bool,
 }
 
 #[derive(Serialize)]
