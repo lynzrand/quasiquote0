@@ -3,6 +3,11 @@
 Reusable hardware-facing building blocks and a minimal status firmware for the
 MindReset Quote/0 board.
 
+The proposed cloud-free frame client, USB management protocol, LittleFS state
+model, and streamed USB OTA design are documented in
+[`docs/PROPOSAL.md`](docs/PROPOSAL.md). This is a design document; its later
+phases are not implemented yet.
+
 | Module | Scope |
 | --- | --- |
 | `wifi` | ESP-IDF Wi-Fi station construction, configuration, and link control |
