@@ -18,7 +18,10 @@ const ACK: u16 = 0x2;
 const FIN: u16 = 0x4;
 const RST: u16 = 0x8;
 const HEADER_LEN: usize = 12;
-const INITIAL_WINDOW: u32 = 256 * 1024;
+/// Standard Yamux peers assume this credit when a stream is opened with data.
+/// Quote/0 normally opens streams with a `WINDOW_UPDATE | SYN` carrying its
+/// real bounded receive capacity instead.
+const STANDARD_INITIAL_WINDOW: u32 = 256 * 1024;
 const MAX_DATA_FRAME: usize = 16 * 1024;
 
 #[derive(Clone, Copy, Debug)]
@@ -89,11 +92,30 @@ struct StreamState {
 }
 
 impl StreamShared {
-    fn new(control: bool, receive_capacity: usize) -> Self {
+    fn control(receive_capacity: usize) -> Self {
         Self {
             state: Mutex::new(StreamState {
                 received: VecDeque::new(),
-                send_window: if control { u32::MAX } else { INITIAL_WINDOW },
+                send_window: u32::MAX,
+                receive_closed: false,
+                send_closed: false,
+                reset: false,
+                receive_capacity,
+            }),
+            readable: Condvar::new(),
+            writable: Condvar::new(),
+            receive_space: Condvar::new(),
+        }
+    }
+
+    /// `send_window` is credit advertised by the peer. Locally initiated
+    /// streams begin with no credit and wait for the peer's ACK; inbound
+    /// streams receive the opening stream's advertised credit.
+    fn data(receive_capacity: usize, send_window: u32) -> Self {
+        Self {
+            state: Mutex::new(StreamState {
+                received: VecDeque::new(),
+                send_window,
                 receive_closed: false,
                 send_closed: false,
                 reset: false,
@@ -125,7 +147,7 @@ impl Yamux {
                 "Yamux buffers must be non-zero",
             ));
         }
-        let control = Arc::new(StreamShared::new(true, config.receive_buffer));
+        let control = Arc::new(StreamShared::control(config.receive_buffer));
         let shared = Arc::new(Shared {
             connection: Mutex::new(ConnectionState {
                 streams: HashMap::from([(0, control)]),
@@ -168,10 +190,13 @@ impl Yamux {
             connection.next_stream_id = id
                 .checked_add(2)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "stream IDs exhausted"))?;
-            let stream = Arc::new(StreamShared::new(false, connection.config.receive_buffer));
+            let receive_capacity = connection.config.receive_buffer;
+            let stream = Arc::new(StreamShared::data(receive_capacity, 0));
             connection.streams.insert(id, stream.clone());
             connection.outbound.push_back(Outbound {
-                header: Header::new(WINDOW_UPDATE, SYN, id, 0),
+                // This opening credit is intentionally the actual per-stream
+                // bounded queue, not Yamux's protocol-level 256 KiB default.
+                header: Header::new(WINDOW_UPDATE, SYN, id, receive_capacity as u32),
                 payload: Vec::new(),
             });
             (id, stream)
@@ -312,10 +337,18 @@ impl Write for YamuxStream {
 }
 
 impl YamuxStream {
+    /// Yamux stream ID selected by the local endpoint for `Yamux::open`.
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Stop both halves of this application stream. The peer receives FIN;
+    /// later payload is drained by the transport but never buffered.
     pub fn close(&self) {
         let mut state = self.stream.state.lock().unwrap();
         if !state.send_closed {
             state.send_closed = true;
+            state.receive_closed = true;
             drop(state);
             queue(
                 &self.connection,
@@ -419,10 +452,13 @@ fn drive_inner<T: Read + Write>(transport: &mut T, shared: &Arc<Shared>) -> io::
         if let Some(payload) = pending.as_mut() {
             let count = if let Some(stream) = &payload.stream {
                 let mut state = stream.state.lock().unwrap();
-                while state.received.len() == state.receive_capacity && !state.reset {
+                while state.received.len() == state.receive_capacity
+                    && !state.reset
+                    && !state.receive_closed
+                {
                     state = stream.receive_space.wait(state).unwrap();
                 }
-                if state.reset {
+                if state.reset || state.receive_closed {
                     chunk.len().min(payload.remaining as usize)
                 } else {
                     chunk
@@ -508,7 +544,7 @@ fn resolve_data_stream(
         return Ok(shared.connection.lock().unwrap().streams.get(&0).cloned());
     }
     if header.flags & SYN != 0 {
-        return create_inbound(shared, header.stream_id);
+        return create_inbound(shared, header.stream_id, STANDARD_INITIAL_WINDOW);
     }
     let stream = shared
         .connection
@@ -527,7 +563,11 @@ fn resolve_data_stream(
     Ok(stream)
 }
 
-fn create_inbound(shared: &Arc<Shared>, id: u32) -> io::Result<Option<Arc<StreamShared>>> {
+fn create_inbound(
+    shared: &Arc<Shared>,
+    id: u32,
+    opening_credit: u32,
+) -> io::Result<Option<Arc<StreamShared>>> {
     let mut connection = shared.connection.lock().unwrap();
     let valid = match connection.mode {
         Mode::Client => id != 0 && id % 2 == 0,
@@ -539,11 +579,12 @@ fn create_inbound(shared: &Arc<Shared>, id: u32) -> io::Result<Option<Arc<Stream
             "invalid Yamux stream ID",
         ));
     }
-    let stream = Arc::new(StreamShared::new(false, connection.config.receive_buffer));
+    let receive_capacity = connection.config.receive_buffer;
+    let stream = Arc::new(StreamShared::data(receive_capacity, opening_credit));
     connection.streams.insert(id, stream.clone());
     connection.inbound.push_back(id);
     connection.outbound.push_back(Outbound {
-        header: Header::new(WINDOW_UPDATE, ACK, id, 0),
+        header: Header::new(WINDOW_UPDATE, ACK, id, receive_capacity as u32),
         payload: Vec::new(),
     });
     shared.inbound_ready.notify_all();
@@ -551,22 +592,28 @@ fn create_inbound(shared: &Arc<Shared>, id: u32) -> io::Result<Option<Arc<Stream
 }
 
 fn handle_window_update(shared: &Arc<Shared>, header: Header) -> io::Result<()> {
-    let stream = if header.flags & SYN != 0 {
-        create_inbound(shared, header.stream_id)?
+    let (stream, opened) = if header.flags & SYN != 0 {
+        (
+            create_inbound(shared, header.stream_id, header.length)?,
+            true,
+        )
     } else {
-        shared
-            .connection
-            .lock()
-            .unwrap()
-            .streams
-            .get(&header.stream_id)
-            .cloned()
+        (
+            shared
+                .connection
+                .lock()
+                .unwrap()
+                .streams
+                .get(&header.stream_id)
+                .cloned(),
+            false,
+        )
     };
     if let Some(stream) = stream {
         let mut state = stream.state.lock().unwrap();
         if header.flags & RST != 0 {
             state.reset = true;
-        } else {
+        } else if !opened {
             state.send_window = state.send_window.saturating_add(header.length);
         }
         if header.flags & FIN != 0 {
