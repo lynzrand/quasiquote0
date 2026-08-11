@@ -8,7 +8,7 @@ use quasiquote0::display::{Epd, EpdPins};
 use quasiquote0::frame::Projection;
 use quasiquote0::jsonrpc;
 use quasiquote0::rpc::ControlRpc;
-use quasiquote0::status_bar::{BatteryMarker, StatusBar};
+use quasiquote0::status_bar::{BatteryMarker, StatusBar, WifiMarker};
 use quasiquote0::usb_serial::UsbSerial;
 use quasiquote0::wifi::WifiStation;
 use quasiquote0::yamux::{Mode, Yamux};
@@ -58,6 +58,7 @@ fn main() {
         jsonrpc::serve(yamux.control_stream(), &mut rpc).expect("recovery JSON-RPC failed");
         return;
     };
+    let wifi_marker = Arc::new(Mutex::new(None));
     let control = yamux.control_stream();
     thread::Builder::new()
         .name("usb-control".into())
@@ -71,6 +72,7 @@ fn main() {
         &mut display,
         device,
         wifi,
+        wifi_marker,
         bluetooth.as_ref().is_some_and(Bluetooth::is_ready),
     );
 }
@@ -79,13 +81,14 @@ fn run_display_loop(
     display: &mut Epd<'_>,
     device: Arc<Mutex<quasiquote0::device::Device>>,
     mut wifi: Option<WifiStation<'_>>,
+    wifi_marker: Arc<Mutex<Option<WifiMarker>>>,
     bluetooth_present: bool,
 ) -> ! {
     let mut last_pull_ms = 0;
     loop {
         let now_ms = (unsafe { esp_idf_sys::esp_timer_get_time() } / 1_000) as u64;
         if let Some(wifi) = wifi.as_mut() {
-            run_scheduled_pull(&device, wifi, now_ms, &mut last_pull_ms);
+            run_scheduled_pull(&device, wifi, &wifi_marker, now_ms, &mut last_pull_ms);
         }
         let candidate = {
             let device = device.lock().unwrap();
@@ -110,7 +113,7 @@ fn run_display_loop(
                 StatusBar {
                     battery: StatusBar::from_battery_percent(battery.percent, false)
                         .or(Some(BatteryMarker::Critical)),
-                    wifi: None,
+                    wifi: *wifi_marker.lock().unwrap(),
                     usb_present: battery.usb_present,
                     bluetooth_present,
                 }
@@ -133,16 +136,20 @@ fn run_display_loop(
 fn run_scheduled_pull(
     device: &Arc<Mutex<quasiquote0::device::Device>>,
     wifi: &mut WifiStation<'_>,
+    wifi_marker: &Arc<Mutex<Option<WifiMarker>>>,
     now_ms: u64,
     last_pull_ms: &mut u64,
 ) {
     let (config, validators) = device.lock().unwrap().pull_snapshot();
     if !config.pull.enabled
-        || now_ms.saturating_sub(*last_pull_ms) < config.pull.interval_seconds.saturating_mul(1_000)
+        || (*last_pull_ms != 0
+            && now_ms.saturating_sub(*last_pull_ms)
+                < config.pull.interval_seconds.saturating_mul(1_000))
     {
         return;
     }
     *last_pull_ms = now_ms;
+    *wifi_marker.lock().unwrap() = Some(WifiMarker::Connecting);
     let result = (|| -> Result<(), String> {
         wifi.configure(&config.wifi.ssid, &config.wifi.password)?;
         let _ = wifi.start();
@@ -187,7 +194,11 @@ fn run_scheduled_pull(
             status => Err(format!("HTTP pull returned status {status}")),
         }
     })();
-    if let Err(error) = result {
-        let _ = device.lock().unwrap().record_pull_error(error);
+    match result {
+        Ok(()) => *wifi_marker.lock().unwrap() = Some(WifiMarker::Connected),
+        Err(error) => {
+            *wifi_marker.lock().unwrap() = Some(WifiMarker::Failed);
+            let _ = device.lock().unwrap().record_pull_error(error);
+        }
     }
 }
