@@ -233,25 +233,23 @@ impl<'d> Epd<'d> {
 
     /// Send a complete native Quote/0 framebuffer and wait for its refresh.
     ///
-    /// The panel's serial data polarity is the inverse of the public frame
-    /// convention.  DTM1 must be all zeroes (not 0xff): on this UC8251D board
-    /// the latter produces alternating blank refreshes and can leave BUSY
-    /// asserted.  Chunks follow the actual frame length, including its final
-    /// 248-byte tail; sending a full 256-byte tail corrupts the next command.
+    /// Panel RAM bit 1 is electrically white, matching the public frame
+    /// convention (`white_is: 1`), so payload bytes are forwarded verbatim;
+    /// an earlier bitwise inversion rendered every image and the status bar
+    /// color-inverted.  DTM1 stays all zeroes: on this UC8251D board 0xff
+    /// produces alternating blank refreshes and can leave BUSY asserted.
+    /// Chunks follow the actual frame length, including its final 248-byte
+    /// tail; sending a full 256-byte tail corrupts the next command.
     pub fn display(&mut self, frame: &Frame) -> Result<(), &'static str> {
         self.power_on()?;
         let old = [0u8; 256];
-        self.command(0x10); // old image = electrically white
+        self.command(0x10); // old image
         for chunk in frame.as_bytes().chunks(old.len()) {
             self.data(&old[..chunk.len()]);
         }
         self.command(0x13);
-        let mut inverted = [0u8; 256];
-        for chunk in frame.as_bytes().chunks(inverted.len()) {
-            for (output, input) in inverted.iter_mut().zip(chunk) {
-                *output = !input;
-            }
-            self.data(&inverted[..chunk.len()]);
+        for chunk in frame.as_bytes().chunks(256) {
+            self.data(chunk);
         }
         self.command(0x12);
         FreeRtos::delay_ms(100);
