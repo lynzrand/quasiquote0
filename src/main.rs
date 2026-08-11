@@ -6,6 +6,7 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use quasiquote0::bluetooth::Bluetooth;
 use quasiquote0::display::{Epd, EpdPins, Frame};
 use quasiquote0::jsonrpc;
+use quasiquote0::rpc::ControlRpc;
 use quasiquote0::usb_serial::UsbSerial;
 use quasiquote0::yamux::{Mode, Yamux};
 use quasiquote0::{battery, link_patches, status_screen, wifi::WifiStation};
@@ -59,5 +60,6 @@ fn main() {
 
     let usb = UsbSerial::new(usb_serial, pins.gpio18, pins.gpio19).expect("USB setup failed");
     let yamux = Yamux::start(usb, Mode::Server).expect("Yamux driver failed");
-    jsonrpc::serve(yamux.control_stream()).expect("stream-0 JSON-RPC failed");
+    let mut rpc = ControlRpc::mount();
+    jsonrpc::serve(yamux.control_stream(), &mut rpc).expect("stream-0 JSON-RPC failed");
 }
