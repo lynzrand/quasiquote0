@@ -1,11 +1,49 @@
 # quasiquote0
 
-Flashable, cloud-free frame-client firmware for the MindReset Quote/0 board.
+Flashable, cloud-free frame-client firmware for the MindReset Quote/0 board
+(ESP32-C3 driving a UC8251D e-paper panel).
 
 The protocol and durability contract are documented in
 [`docs/PROPOSAL.md`](docs/PROPOSAL.md). The firmware owns Wi-Fi pulling,
 LittleFS persistence, panel refreshes, USB configuration, and streamed OTA;
 servers supply only canonical 296x152 monochrome frames.
+
+## Status
+
+Verified on hardware:
+
+- Yamux control session over USB Serial/JTAG with newline-delimited JSON-RPC
+- Streamed, digest-verified frame uploads with operation progress tracking
+- Panel refresh including the device-drawn status bar; frames persist in
+  LittleFS and are redrawn automatically after reboot or power loss
+- USB-visible recovery mode for damaged filesystem state
+
+Implemented, not yet exercised against real infrastructure: scheduled HTTP
+pulling and streamed USB OTA. The Bluetooth module is payload encoding only;
+the current firmware does not start the radio's NimBLE stack.
+
+## Requirements
+
+- ESP Rust toolchain (`rustup` with `espup`; `rust-toolchain.toml` pins the
+  nightly and `rust-src`)
+- [`ldproxy`](https://crates.io/crates/ldproxy) (ESP-IDF linker frontend)
+- [`espflash`](https://crates.io/crates/espflash) for flashing
+- Python 3 with `pyserial`, only for the host client below
+
+## Building and flashing
+
+```console
+cargo build
+espflash flash --port /dev/ttyACM0 \
+  --bootloader "$(ls -t target/riscv32imc-esp-espidf/debug/build/esp-idf-sys-*/out/build/bootloader/bootloader.bin | head -1)" \
+  --partition-table "$(ls -t target/riscv32imc-esp-espidf/debug/build/esp-idf-sys-*/out/build/partition_table/partition-table.bin | head -1)" \
+  target/riscv32imc-esp-espidf/debug/quasiquote0
+```
+
+When migrating from the stock firmware or anything else, erase first with
+`espflash erase-flash --port /dev/ttyACM0`; the device formats its LittleFS
+volume on first boot. A blank volume boots unconfigured but fully reachable
+over USB.
 
 | Module | Scope |
 | --- | --- |
@@ -52,3 +90,14 @@ python3 tools/quasiquote0_usb.py --port /dev/ttyACM0 operation-status 1
 ```
 
 `frame.bin` is exactly 5,624 bytes in the documented native landscape format.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## AI-assisted development
+
+This firmware is developed with the help of an LLM coding agent; commits
+tagged `(AI)` were authored by such an agent under human direction and
+review. Hardware-facing claims (panel polarity, partition layout, boot
+behavior) are validated against a real Quote/0 board before landing.
