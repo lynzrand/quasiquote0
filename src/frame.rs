@@ -26,8 +26,9 @@ pub struct Frame {
 }
 
 /// The fixed mapping between the user-visible landscape canvas and UC8251D
-/// portrait RAM. `Clockwise` is the default candidate and is guarded by the
-/// corner-marker hardware test before the wire protocol is released.
+/// portrait RAM. `Clockwise` matches the Quote/0 mount: landscape content
+/// upright with the device-owned status bar along the viewer's right edge,
+/// which corresponds to the first canvas columns before the content area.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Projection {
     Clockwise,
@@ -104,8 +105,14 @@ impl Frame {
                     .pixel_is_white(source_x, source_y)
                     .expect("source coordinates are in range");
                 let (controller_x, controller_y) = match projection {
-                    Projection::Clockwise => (HEIGHT - 1 - source_y, source_x),
-                    Projection::CounterClockwise => (source_y, WIDTH - 1 - source_x),
+                    // Calibrated against the mounted Quote/0 panel: the
+                    // landscape canvas renders with its origin at the
+                    // viewer's top-left (x rightward, y downward), so
+                    // server-authored images are neither mirrored nor
+                    // flipped. The reserved status columns sit at the
+                    // canvas's right edge.
+                    Projection::Clockwise => (source_y, WIDTH - 1 - source_x),
+                    Projection::CounterClockwise => (HEIGHT - 1 - source_y, source_x),
                 };
                 output.set_pixel(controller_x, controller_y, white);
             }
@@ -141,8 +148,8 @@ mod tests {
         frame.set_pixel(WIDTH - 1, HEIGHT - 1, true);
 
         let projected = frame.project(Projection::Clockwise);
+        assert_eq!(projected.pixel_is_white(0, WIDTH - 1), Some(true));
         assert_eq!(projected.pixel_is_white(HEIGHT - 1, 0), Some(true));
-        assert_eq!(projected.pixel_is_white(0, WIDTH - 1), Some(true),);
     }
 
     #[test]

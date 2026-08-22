@@ -46,6 +46,9 @@ impl StatusBar {
     /// Replace the whole status region. This makes the producer's reserved
     /// columns irrelevant and prevents stale glyph pixels from surviving a
     /// changed status snapshot.
+    ///
+    /// The strip occupies the canvas's last columns, which the projection
+    /// places along the viewer's right edge of the mounted panel.
     pub fn overlay(&self, frame: &mut Frame) {
         for y in 0..HEIGHT {
             for x in CONTENT_WIDTH..WIDTH {
@@ -61,7 +64,7 @@ impl StatusBar {
         }
         if self.usb_present {
             // A deliberately short placeholder until the USB icon is supplied.
-            draw_text(frame, 6, 47, "U");
+            draw_text(frame, CONTENT_WIDTH + 6, 47, "U");
         }
         if self.bluetooth_present {
             draw_icon(frame, 64, BLUETOOTH);
@@ -93,11 +96,18 @@ fn wifi_icon(marker: WifiMarker) -> Icon {
     }
 }
 
+/// Draw a sprite rotated a quarter-turn counter-clockwise. The strip is a
+/// narrow vertical band on the panel, but the icon art is authored for the
+/// device's landscape reading orientation, so battery terminals point right.
 fn draw_icon(frame: &mut Frame, y: usize, icon: Icon) {
     for (row_index, row) in icon.iter().copied().enumerate() {
         for column in 0..WIDTH_PIXELS {
             if row & (0x8000 >> column) != 0 {
-                frame.set_pixel(CONTENT_WIDTH + column, y + row_index, false);
+                frame.set_pixel(
+                    CONTENT_WIDTH + (WIDTH_PIXELS - 1 - row_index),
+                    y + column,
+                    false,
+                );
             }
         }
     }
@@ -151,8 +161,10 @@ mod tests {
 
         assert_eq!(frame.pixel_is_white(CONTENT_WIDTH - 1, 0), Some(false));
         assert_eq!(frame.pixel_is_white(CONTENT_WIDTH, HEIGHT - 1), Some(true));
-        // Battery-75's top terminal begins at column 6 in the sprite's second row.
-        assert_eq!(frame.pixel_is_white(CONTENT_WIDTH + 6, 1), Some(false));
+        // Battery-75's terminal nub is sprite row 1, columns 6-9; rotated a
+        // quarter-turn counter-clockwise it lands at canvas x=CONTENT_WIDTH+14.
+        assert_eq!(frame.pixel_is_white(CONTENT_WIDTH + 14, 6), Some(false));
+        assert_eq!(frame.pixel_is_white(CONTENT_WIDTH + 14, 9), Some(false));
     }
 
     #[test]
