@@ -1,10 +1,28 @@
 # Proposal: Cloud-Free Quote/0 Frame Client
 
-Status: proposed
+Status: implemented in part; hardware acceptance in progress
 
 Target: MindReset Quote/0 / Dot, ESP32-C3, 4 MiB flash
 
 Firmware project: `quasiquote0`
+
+## Current design checkpoint
+
+The main application remains a remote framebuffer. The separate `quote0-clock`
+binary is a bring-up diagnostic, not a change to the server-rendered content
+contract. Its visible clock, minute rollover, suppression of redundant
+same-minute refreshes, and USB wakefulness beyond the startup recovery window
+were verified on 2026-10-18. Both timer and GPIO wake sources armed successfully;
+battery sleep followed by physical USB-insertion wake still needs verification
+with the current recovery guards.
+
+The frame client already implements USB management, durable frames,
+HTTP(S) pulling, display composition, battery scheduling, and streamed OTA.
+Implementation alone does not satisfy the acceptance criteria below. The next
+milestone is end-to-end HTTP(S) pull and OTA validation on the board, including
+unchanged/invalid response handling and interrupted upgrades. Connectable BLE
+frame push remains a subsequent feature; its draft contract is in
+[`PROTOCOL.md`](PROTOCOL.md#32-gatt-frame-push-intended-not-yet-implemented).
 
 ## Summary
 
@@ -52,7 +70,8 @@ starting point.
 - An inbound HTTP or HTTPS API.
 - MindReset cloud compatibility.
 - MQTT or WebSocket support.
-- BLE provisioning or advertising.
+- BLE provisioning. A non-connectable BTHome telemetry beacon is implemented;
+  connectable frame push remains outside the initial core acceptance milestone.
 - Partial e-paper refresh.
 - A user-visible USB mass-storage volume.
 - Applying every intermediate frame. The newest complete desired frame wins.
@@ -145,9 +164,16 @@ waiting for input.
 
 ### USB-powered mode
 
-VBUS on GPIO0 is authoritative. While VBUS is present, the device stays awake
-by default, serves USB, and may run periodic pulls. USB configuration, manual
+Either VBUS on GPIO0 or detected USB host activity prevents deep sleep. While
+USB is present, the device always stays awake, serves USB, and may run periodic
+pulls. The legacy `stay_awake_on_usb` field is accepted but cannot disable this
+guard. USB configuration, manual
 pulls, diagnostics, frame upload, and OTA are available in this mode.
+
+Cold boots and GPIO wakes provide a 60-second recovery window; timer wakes
+provide two seconds for enumeration. Before battery sleep, the firmware must
+successfully arm both a timer and GPIO0-high USB-insertion wake, then recheck
+USB presence and active transfers. Wake-source errors keep the device awake.
 
 ### Battery mode
 
@@ -165,8 +191,9 @@ At critical battery voltage the firmware skips Wi-Fi and display refresh,
 leaves the panel powered off, and sleeps until VBUS or a conservative safety
 timer wakes it. Exact thresholds will be hardware-tested before release.
 
-An unconfigured device retains its last frame, briefly exposes USB when VBUS is
-present, and otherwise sleeps. It does not create an access point.
+An unconfigured device retains its last frame, stays reachable while USB is
+present, and otherwise sleeps after its recovery window. It does not create an
+access point.
 
 ## Canonical frame format
 
@@ -226,9 +253,9 @@ in progress uses the disconnected artwork because no separate progress icon
 exists. USB VBUS remains the deliberately short `U` placeholder until its
 bitmap is supplied.
 
-Absent or inapplicable indicators are left blank. Bluetooth remains outside
-the first-release scope, so its icon remains blank until Bluetooth support is
-actually enabled. Replacing the final USB placeholder does not change the
+Absent or inapplicable indicators are left blank. The Bluetooth icon reflects
+whether the implemented BTHome beacon is advertising; it does not imply a
+connectable GATT service. Replacing the final USB placeholder does not change the
 status model, layout, or frame protocol.
 
 The persisted `content_sha256` identifies the canonical producer-supplied
@@ -475,10 +502,10 @@ hash alone is a signature.
 Boot proceeds in the following order:
 
 1. install ESP-IDF patches and capture reset/OTA state;
-2. read VBUS and battery status;
-3. mount LittleFS and recover abandoned transactions;
-4. load and validate configuration, state, and desired frame;
-5. start USB/Yamux when VBUS is present;
+2. start USB/Yamux transport before filesystem, display, and radio setup;
+3. mount LittleFS, recover abandoned transactions, and load validated state;
+4. serve normal USB control, or recovery control if storage failed;
+5. initialize optional display and radio services without blocking USB control;
 6. complete pending OTA self-tests and validation;
 7. redraw if no displayed digest is trustworthy;
 8. enter the appropriate USB-powered or battery scheduler.
