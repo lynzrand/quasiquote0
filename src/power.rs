@@ -1,6 +1,17 @@
 //! USB always wins over configuration and battery sleep.
 
 use crate::power_policy::AwakeGuard;
+use std::sync::Mutex;
+
+static WAKE_RESULT: Mutex<Option<Result<(), &'static str>>> = Mutex::new(None);
+
+pub fn wake_status() -> (bool, Option<&'static str>) {
+    match *WAKE_RESULT.lock().unwrap() {
+        Some(Ok(())) => (true, None),
+        Some(Err(error)) => (false, Some(error)),
+        None => (false, None),
+    }
+}
 
 /// Below this terminal voltage the device stops refreshing the panel and
 /// stops transmitting so the cell survives until charging.
@@ -33,6 +44,12 @@ pub fn must_stay_awake() -> bool {
 
 /// Both wake sources are mandatory. On any error the caller stays awake.
 pub fn arm_wake_sources(seconds: u64) -> Result<(), &'static str> {
+    let result = arm_wake_sources_inner(seconds);
+    *WAKE_RESULT.lock().unwrap() = Some(result);
+    result
+}
+
+fn arm_wake_sources_inner(seconds: u64) -> Result<(), &'static str> {
     let micros = seconds
         .checked_mul(1_000_000)
         .filter(|v| *v > 0)

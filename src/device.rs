@@ -15,6 +15,10 @@ pub struct Device {
     // Pull failures change far more often than the desired frame. Keep them
     // in RAM so an outage cannot turn into avoidable LittleFS wear.
     last_pull_error: Option<String>,
+    pub display_clock: Option<i64>,
+    pub display_refreshes: u32,
+    pub display_error: Option<String>,
+    pub pull_attempts: u32,
 }
 
 #[derive(Debug)]
@@ -45,6 +49,10 @@ impl Device {
             config,
             state,
             last_pull_error: None,
+            display_clock: None,
+            display_refreshes: 0,
+            display_error: None,
+            pull_attempts: 0,
         })
     }
 
@@ -182,12 +190,36 @@ impl Device {
         content: &Sha256Digest,
         composed: &Sha256Digest,
         firmware_version: &str,
+        clock_seconds: i64,
+        status_bar: bool,
     ) -> Result<(), DeviceError> {
-        self.state.displayed_content_sha256 = Some(digest_hex(content));
-        self.state.displayed_composed_sha256 = Some(digest_hex(composed));
-        self.state.firmware_version = Some(firmware_version.to_owned());
-        self.store.save_state(&self.state)?;
+        // Heartbeats update the acknowledged status in RAM. Persist only a
+        // content/firmware transition, avoiding one LittleFS write per minute.
+        let content = digest_hex(content);
+        let persist = self.state.displayed_content_sha256.as_ref() != Some(&content)
+            || self.state.firmware_version.as_deref() != Some(firmware_version)
+            || self.state.displayed_status_bar != Some(status_bar);
+        let mut next = self.state.clone();
+        next.displayed_content_sha256 = Some(content);
+        next.displayed_composed_sha256 = Some(digest_hex(composed));
+        next.firmware_version = Some(firmware_version.to_owned());
+        next.displayed_status_bar = Some(status_bar);
+        if persist {
+            self.store.save_state(&next)?;
+        }
+        self.state = next;
+        self.display_clock = Some(clock_seconds);
+        self.display_refreshes = self.display_refreshes.saturating_add(1);
+        self.display_error = None;
         Ok(())
+    }
+
+    pub fn desired_digest(&self) -> Result<Sha256Digest, DeviceError> {
+        self.state
+            .desired
+            .as_ref()
+            .map(|desired| parse_digest(&desired.sha256))
+            .unwrap_or_else(|| Ok(Frame::white().sha256()))
     }
 
     pub fn invalidate_displayed(&mut self) -> Result<(), DeviceError> {

@@ -1,4 +1,4 @@
-# Read or synchronize the minute-clock firmware over its Yamux USB channel.
+# Read or synchronize the clock or frame-client firmware over its Yamux USB channel.
 [CmdletBinding()]
 param(
     [string]$Port = 'COM4',

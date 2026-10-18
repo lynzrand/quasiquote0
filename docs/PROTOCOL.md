@@ -18,7 +18,12 @@ The canonical frame format is shared by every channel:
 
 The device overlays a 16-column status strip on the **right edge**
 (columns 280–295) whenever `display.status_bar` is enabled; producers
-should treat that region as reserved.
+should treat that region as reserved. The whole strip is recomposed each
+minute: battery, Wi-Fi, USB power, Bluetooth advertising, and a bottom `HH:MM`
+clock in UTC+8. The plug icon indicates USB power, not measured charging.
+The current implementation refreshes the full panel, preserving the retained
+content pixels. Disabling the strip disables minute-only refreshes and wakes;
+critical battery suppresses the heartbeat even when the strip is enabled.
 
 ## 1. USB wire protocol (implemented)
 
@@ -28,7 +33,12 @@ JSON-RPC framing and exposes `system.ping`, `device.hello`, `device.status`,
 `{"unix_seconds":1792326341}` (UTC, between 2020 and 2100). The face uses a
 fixed UTC+8 offset. `clock.get` reports time, acknowledged display time and
 refresh count, VBUS/host presence, wake-source setup, and uptime. Frame-client
-methods below belong to the `quasiquote0` binary, rather than the clock binary.
+and management methods below belong to the `quasiquote0` binary. Both binaries
+support `clock.get` and `clock.set`; the frame client also reports pull interval
+and attempt count. Display refresh/attempt counters are per boot. The clock
+shows `--:--` before synchronization; deep sleep retains time, full power loss
+does not. The frame client's `device.status.display` includes
+`clock_unix_seconds`, `refreshes`, and `error` for acknowledged updates.
 
 USB Serial/JTAG (GPIO18/19) carries exactly one **Yamux** session
 (version 0 framing). No log text ever appears on this wire; the
@@ -55,6 +65,8 @@ bootloader and application consoles are disabled.
 | `system.ping`          | Liveness / framing check                            |
 | `device.hello`         | Protocol version, firmware, hardware, capabilities  |
 | `device.status`        | Battery, filesystem, display, pull, reset token     |
+| `clock.get`            | RTC time, acknowledged display time, power and pull counters |
+| `clock.set`            | Synchronize UTC using integer `unix_seconds` |
 | `device.reboot`        | Orderly reboot after replying                       |
 | `config.get`           | Versioned, secret-redacted configuration            |
 | `config.set`           | Validate and transactionally replace configuration  |
@@ -131,9 +143,12 @@ HTTPS uses the ESP-IDF certificate bundle; plain HTTP requires
   successful timer and GPIO0-high wake configuration, followed by a final
   USB/transfer check immediately before entering deep sleep. A wake-source
   error leaves the MCU awake.
-- On battery the device performs one conditional pull per wake, then
-  deep-sleeps until the next interval. Backoff state is RAM-only and
-  resets across sleeps; interval spacing already bounds retry rate.
+- On battery the enabled status bar wakes at minute boundaries and redraws
+  every indicator over the retained frame. Wi-Fi stays off on clock-only
+  wakes. Pull deadlines and exponential backoff survive deep sleep in RTC
+  memory, use a counter independent of wall time, and reset on a normal
+  reboot or full power loss. Sleep ends at the next minute or pull deadline,
+  whichever is earlier. Clock-only refreshes do not write to LittleFS.
 
 ## 3. Bluetooth Low Energy
 

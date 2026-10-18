@@ -9,3 +9,11 @@ pub mod embedded_graphics;
 pub mod frame;
 #[path = "../../../src/power_policy.rs"]
 pub mod power_policy;
+#[path = "../../../src/pull_schedule.rs"]
+pub mod pull_schedule;
+#[path = "../../../src/refresh_policy.rs"]
+pub mod refresh_policy;
+#[path = "../../../src/status_bar.rs"]
+pub mod status_bar;
+#[path = "../../../src/status_icons.rs"]
+pub mod status_icons;

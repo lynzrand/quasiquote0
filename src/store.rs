@@ -53,6 +53,8 @@ pub struct DeviceState {
     pub displayed_content_sha256: Option<String>,
     pub displayed_composed_sha256: Option<String>,
     #[serde(default)]
+    pub displayed_status_bar: Option<bool>,
+    #[serde(default)]
     pub pull: PullValidators,
     pub firmware_version: Option<String>,
     pub ota_pending: Option<String>,
@@ -194,13 +196,17 @@ impl Store {
     /// its replacement. This also collects complete but unreferenced files
     /// left by a rejected HTTP digest or a power loss after frame publication.
     pub fn remove_unreferenced_frames(&self, state: &DeviceState) -> Result<(), StoreError> {
-        let retained = state.desired.as_ref().map(|desired| {
-            self.path(&format!("{FRAME_DIRECTORY}/{}.bin", desired.sha256))
-        });
+        let retained = state
+            .desired
+            .as_ref()
+            .map(|desired| self.path(&format!("{FRAME_DIRECTORY}/{}.bin", desired.sha256)));
         for entry in fs::read_dir(self.path(FRAME_DIRECTORY))? {
             let entry = entry?;
             if entry.file_type()?.is_file()
-                && entry.path().extension().is_some_and(|extension| extension == "bin")
+                && entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "bin")
                 && retained.as_ref() != Some(&entry.path())
             {
                 fs::remove_file(entry.path())?;
@@ -351,7 +357,9 @@ impl Store {
                 return Ok(());
             }
         }
-        Err(StoreError("too many quarantined configuration files".to_owned()))
+        Err(StoreError(
+            "too many quarantined configuration files".to_owned(),
+        ))
     }
 
     fn frame_path(&self, digest: &Sha256Digest) -> PathBuf {

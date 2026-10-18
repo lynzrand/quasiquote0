@@ -64,12 +64,33 @@ Verified on hardware:
   LittleFS and are redrawn automatically after reboot or power loss
 - USB-visible recovery mode for damaged filesystem state
 - Battery management: VBUS-gated wake, deep-sleep timer cycling with one
-  conditional pull per wake, critical-battery protection
+  minute status heartbeat, independent pull deadlines, critical-battery protection
 - BLE BTHome v2 beacon (battery/link telemetry) while awake
 
 Implemented, not yet exercised against real infrastructure: scheduled HTTP
 pulling and streamed USB OTA. A connectable GATT push channel is specified
 in [`docs/PROTOCOL.md`](docs/PROTOCOL.md) but not implemented yet.
+
+### Minute status heartbeat
+
+The main `quasiquote0` application updates the complete 16-column status bar
+every minute: battery, Wi-Fi, USB power, Bluetooth advertising, and a small
+UTC+8 clock. Producer content remains unchanged between frame updates. On
+battery, clock-only wakes keep Wi-Fi off; pull deadlines and backoff survive
+deep sleep independently in RTC memory. The current full-panel refresh uses
+more battery than content-only updates. Critical battery suspends the
+heartbeat; `display.status_bar: false` disables minute wakes.
+
+Synchronize or inspect time over USB with `tools/clock_usb.ps1 -SyncTime` on
+Windows, or `tools/quasiquote0_usb.py --port <port> clock-sync` / `clock-get`.
+Unknown time displays `--:--`; a complete power loss requires synchronization.
+Current display acknowledgment updates in RAM, so clock ticks do not write
+LittleFS state each minute.
+
+For the recovered Windows setup, build `--bin quasiquote0`, convert its ELF
+with the same esptool options above, and pass that image to
+`tools/flash_app_windows.ps1 -Image <image.bin>`. This keeps the recovered
+bootloader and partition layout and then synchronizes the clock.
 
 ### NFC
 

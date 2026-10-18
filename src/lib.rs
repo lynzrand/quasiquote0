@@ -19,12 +19,15 @@ pub mod power;
 pub mod power_policy;
 pub mod pull;
 pub mod pull_schedule;
+pub mod refresh_policy;
 pub mod rpc;
+pub mod rtc_schedule;
 pub mod status_bar;
 pub mod status_icons;
 pub mod status_screen;
 pub mod store;
 pub mod usb_serial;
+pub mod wall_clock;
 pub mod wifi;
 pub mod yamux;
 

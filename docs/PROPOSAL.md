@@ -12,9 +12,16 @@ The main application remains a remote framebuffer. The separate `quote0-clock`
 binary is a bring-up diagnostic, not a change to the server-rendered content
 contract. Its visible clock, minute rollover, suppression of redundant
 same-minute refreshes, and USB wakefulness beyond the startup recovery window
-were verified on 2026-10-18. Both timer and GPIO wake sources armed successfully;
-battery sleep followed by physical USB-insertion wake still needs verification
-with the current recovery guards.
+were verified on 2026-10-18.
+
+The main frame client now has a minute clock and full status-strip heartbeat.
+On 2026-10-18, a live rollover changed the composed image without changing
+retained content or increasing the HTTP pull count. The user observed two
+minute changes on battery; reconnecting USB produced a deep-sleep reset reason
+and GPIO wake cause, retained synchronized RTC time, and restored the USB
+control channel. Both wake sources armed without error. The 26 host tests
+cover status boundaries, refresh retry/heartbeat behavior, and pull deadlines
+across clock-only wakes. Long-run battery life remains unmeasured.
 
 The frame client already implements USB management, durable frames,
 HTTP(S) pulling, display composition, battery scheduling, and streamed OTA.
@@ -57,8 +64,8 @@ starting point.
 2. A simple custom server can supply the exact pixels to display.
 3. Loss of power during configuration, frame persistence, or OTA cannot destroy
    the last known-good state or active firmware.
-4. The steady-state battery path wakes, fetches, refreshes only when needed,
-   and returns to deep sleep.
+4. The battery path wakes for the minute status heartbeat or a due pull,
+   refreshes the current frame and status, and returns to deep sleep.
 5. The USB protocol remains bounded-memory and backpressure-aware. Large
    transfers are streamed directly to their destination.
 6. A bad response, failed TLS connection, interrupted upload, or display timeout
@@ -182,10 +189,10 @@ The normal cycle is:
 1. wake from the configured timer;
 2. measure battery voltage;
 3. load configuration and the current desired frame metadata;
-4. enable Wi-Fi and attempt one conditional pull;
+4. enable Wi-Fi and attempt one conditional pull only if its retained deadline is due;
 5. validate and persist a changed frame;
-6. refresh the panel only if the effective frame changed;
-7. disable Wi-Fi and enter deep sleep.
+6. refresh changed content or the full status strip when a new minute is due;
+7. disable Wi-Fi and sleep until the next minute or pull deadline, whichever is earlier.
 
 At critical battery voltage the firmware skips Wi-Fi and display refresh,
 leaves the panel powered off, and sleeps until VBUS or a conservative safety
@@ -239,31 +246,42 @@ format. Producers should leave the status region white, but firmware always
 overwrites all 16 columns before projection and display. With the bar disabled
 by configuration, the producer owns the complete 296 x 152 canvas.
 
-The bar is a snapshot captured whenever another reason already requires a full
-panel refresh. Wi-Fi association, USB insertion/removal, Bluetooth changes, or
-small battery changes do not cause a refresh by themselves. This avoids costly
-full-screen refreshes and means the indicators describe state at the time of
-the last displayed update, not a live dashboard.
+The bar is a minute heartbeat. When enabled, the battery scheduler wakes at
+UTC minute boundaries to recompose the entire strip over the retained producer
+frame. USB-powered operation performs the same update without sleeping. A
+content or bar-layout change may also trigger a refresh. With the current
+stock waveform these are full-panel refreshes; the content pixels remain the
+same but the panel still spends energy refreshing them. Critical-battery
+protection suspends the heartbeat and uses the longer safety sleep.
 
-The supplied 16 x 16 one-bit artwork is compiled into the firmware for Wi-Fi
-(connected, pull failed, disconnected), battery (0/25/50/75/100, critical,
-charging), and Bluetooth. It is rendered unchanged in the reserved columns:
-Wi-Fi at the top, battery beneath it, Bluetooth lower down. Wi-Fi association
-in progress uses the disconnected artwork because no separate progress icon
-exists. USB VBUS remains the deliberately short `U` placeholder until its
-bitmap is supplied.
+The bottom of the strip shows a rotated `HH:MM` clock in UTC+8. It uses the
+same reading orientation as the icons, shows `--:--` before time is known,
+and advances only after a successful display update. USB `clock.set`
+synchronizes UTC; RTC time survives deep sleep but complete power loss
+requires synchronization again. No network time request is made on a minute
+wake.
 
-Absent or inapplicable indicators are left blank. The Bluetooth icon reflects
-whether the implemented BTHome beacon is advertising; it does not imply a
-connectable GATT service. Replacing the final USB placeholder does not change the
-status model, layout, or frame protocol.
+The supplied 16 x 16 one-bit artwork occupies evenly spaced slots: battery
+at row 0, Wi-Fi at row 24, USB power at row 48, and Bluetooth at row 72.
+The clock occupies the bottom 30 rows. The supplied power-plug artwork
+replaces the USB placeholder and indicates VBUS, not measured charging.
+Wi-Fi shows disconnected while the station is stopped or connecting, and
+failed after an unsuccessful pull. Bluetooth indicates active BTHome
+advertising, not a connectable GATT service. Absent battery telemetry and
+inactive USB/Bluetooth indicators leave their icon slots blank.
+
+HTTP pulling is independent of the minute heartbeat. A separate RTC counter
+keeps pull deadlines and failure backoff across deep sleep, without being
+shifted by USB wall-clock synchronization. Minute wakes do not start Wi-Fi
+until a pull is due. A disabled status bar disables clock-only wakes.
 
 The persisted `content_sha256` identifies the canonical producer-supplied
 frame and remains the value used for HTTP caching and content-change decisions.
 The `composed_sha256` identifies the exact image last sent to the controller
-after the status overlay. A change in a candidate composed hash caused only by
-status does not schedule a refresh; it is recorded only when a content,
-configuration, recovery, or explicitly forced refresh occurs.
+after the status overlay. Status changes are sampled at the next minute heartbeat or content refresh.
+The current composed hash and acknowledged clock are updated in RAM after
+each successful refresh; clock-only updates do not write state to LittleFS.
+Content and firmware transitions still persist their display acknowledgment.
 
 ## HTTP(S) pull protocol
 
@@ -596,8 +614,8 @@ responses leave the current frame untouched.
 
 - Route boot, HTTP, and USB frames through one desired-state commit/display
   path.
-- Add the byte-aligned 16-pixel device status overlay with short placeholder
-  glyphs and separate content/composed hashes.
+- Add the byte-aligned 16-pixel device status overlay with supplied icons, a minute clock,
+  and separate content/composed hashes.
 - Correct and hardware-test the full UC8251D old/new plane sequence.
 - Add VBUS-aware awake and battery wake/fetch/sleep schedulers.
 - Add firmware-version redraw invalidation and critical-battery protection.
@@ -637,7 +655,8 @@ The first usable release must demonstrate all of the following on hardware:
 - Configuration survives reboot and abrupt unplugging.
 - Last valid frame survives reboot, network outage, server error, and bad next
   response.
-- `304` and identical `200` bodies cause no display refresh.
+- `304` and identical `200` bodies cause no extra content-triggered refresh;
+  the independent minute heartbeat continues when enabled.
 - `204` retains the current display.
 - HTTP works only when explicitly enabled; HTTPS validates certificates.
 - USB JSON-RPC remains responsive while a transfer is blocked on input or
@@ -646,9 +665,10 @@ The first usable release must demonstrate all of the following on hardware:
   device closes each stream immediately after the declared payload length.
 - Frame and OTA uploads use bounded memory and do not aggregate their inputs.
 - A landscape corner-marker fixture displays with the documented handedness.
-- The enabled status bar always replaces the rightmost 16 columns, placeholder
-  glyphs fit without entering the 280 x 152 content area, and transient status
-  changes alone cause no panel refresh.
+- The enabled status bar always replaces the rightmost 16 columns, icons and clock
+  fit without entering the 280 x 152 content area, and transient status
+  changes are sampled on minute heartbeats rather than scheduling immediate
+  refreshes.
 - Repeated full refreshes do not blank every second update.
 - Interrupted OTA boots the previous slot; a failed new boot rolls back.
 - The first boot after a successful OTA redraws the retained desired frame.

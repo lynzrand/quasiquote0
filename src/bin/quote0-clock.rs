@@ -6,6 +6,7 @@ use quasiquote0::display::{Epd, EpdPins};
 use quasiquote0::frame::Projection;
 use quasiquote0::jsonrpc::{self, Error, Handler, Request};
 use quasiquote0::usb_serial::UsbSerial;
+use quasiquote0::wall_clock::unix_seconds;
 use quasiquote0::yamux::{Mode, Yamux};
 use quasiquote0::{battery, power};
 use serde_json::{json, Value};
@@ -17,14 +18,6 @@ struct DisplayState {
     refreshes: u32,
     error: Option<&'static str>,
     wake_error: Option<&'static str>,
-}
-
-fn unix_seconds() -> i64 {
-    let mut now = esp_idf_sys::timeval::default();
-    unsafe {
-        esp_idf_sys::gettimeofday(&mut now, core::ptr::null_mut());
-    }
-    now.tv_sec
 }
 
 struct ClockRpc {
@@ -47,13 +40,7 @@ impl Handler for ClockRpc {
                     .ok_or_else(|| {
                         Error::invalid_params("unix_seconds must be between 2020 and 2100")
                     })?;
-                let now = esp_idf_sys::timeval {
-                    tv_sec: seconds,
-                    tv_usec: 0,
-                };
-                if unsafe { esp_idf_sys::settimeofday(&now, core::ptr::null()) } != 0 {
-                    return Err(Error::invalid_params("RTC time could not be set"));
-                }
+                quasiquote0::wall_clock::set(seconds).map_err(Error::invalid_params)?;
                 Ok(json!({"accepted":true, "unix_seconds":seconds,
                     "utc_offset_minutes":clock_face::UTC_OFFSET_MINUTES}))
             }

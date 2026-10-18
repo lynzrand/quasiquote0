@@ -152,6 +152,34 @@ impl DeviceRpc {
             }),
             "device.hello" => value(self.hello()),
             "device.status" => value(self.status()?),
+            "clock.get" => {
+                let device = self.device.lock().unwrap();
+                let mut status = crate::wall_clock::status();
+                status["mode"] = serde_json::json!("frame-client");
+                status["display"] = serde_json::json!({
+                    "time":device.display_clock.map(|seconds| crate::clock_face::ClockFace::at(seconds).text()),
+                    "refreshes":device.display_refreshes, "error":device.display_error});
+                let guard = crate::power::guard();
+                let (armed, error) = crate::power::wake_status();
+                status["power"] = serde_json::json!({
+                    "vbus_present":guard.vbus_present, "usb_host_connected":guard.usb_host_connected,
+                    "must_stay_awake":guard.must_stay_awake(), "uptime_ms":guard.uptime_ms,
+                    "timer_wake":guard.timer_wake, "wake_sources_armed":armed, "wake_error":error,
+                    "reset_reason":unsafe { esp_idf_sys::esp_reset_reason() },
+                    "wake_cause":unsafe { esp_idf_sys::esp_sleep_get_wakeup_cause() }});
+                status["pull"] = serde_json::json!({"enabled":device.config().pull.enabled,
+                    "interval_seconds":device.config().pull.interval_seconds, "attempts":device.pull_attempts});
+                Ok(status)
+            }
+            "clock.set" => {
+                let seconds = params
+                    .get("unix_seconds")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| Error::invalid_params("unix_seconds is required"))?;
+                crate::wall_clock::set(seconds).map_err(Error::invalid_params)?;
+                Ok(serde_json::json!({"accepted":true, "unix_seconds":seconds,
+                    "utc_offset_minutes":crate::clock_face::UTC_OFFSET_MINUTES}))
+            }
             "device.reboot" => {
                 self.reboot_requested = true;
                 value(RebootResult { rebooting: true })
@@ -248,6 +276,9 @@ impl DeviceRpc {
                 desired_sha256: state.desired.as_ref().map(|desired| desired.sha256.clone()),
                 displayed_content_sha256: state.displayed_content_sha256.clone(),
                 displayed_composed_sha256: state.displayed_composed_sha256.clone(),
+                clock_unix_seconds: device.display_clock,
+                refreshes: device.display_refreshes,
+                error: device.display_error.clone(),
             },
             pull: PullStatus {
                 enabled: device.config().pull.enabled,
@@ -334,8 +365,7 @@ impl DeviceRpc {
     fn i2c_scan(&self, params: &Value) -> Result<Value, Error> {
         let params: I2cScanParams = serde_json::from_value(params.clone())
             .map_err(|error| Error::invalid_params(error.to_string()))?;
-        let devices = crate::i2c_probe::scan(params.sda, params.scl)
-            .map_err(device_error)?;
+        let devices = crate::i2c_probe::scan(params.sda, params.scl).map_err(device_error)?;
         value(I2cScanResult {
             sda: params.sda,
             scl: params.scl,
@@ -769,6 +799,9 @@ struct DisplayStatus {
     desired_sha256: Option<String>,
     displayed_content_sha256: Option<String>,
     displayed_composed_sha256: Option<String>,
+    clock_unix_seconds: Option<i64>,
+    refreshes: u32,
+    error: Option<String>,
 }
 
 #[derive(Serialize)]

@@ -51,7 +51,11 @@ class Stream:
 
 class Yamux:
     def __init__(self, port: str, timeout: float) -> None:
-        self.serial = serial.Serial(port, baudrate=115200, timeout=timeout, write_timeout=timeout)
+        self.serial = serial.Serial(baudrate=115200, timeout=timeout, write_timeout=timeout)
+        self.serial.dtr = False
+        self.serial.rts = False
+        self.serial.port = port
+        self.serial.open()
         self.timeout = timeout
         self.streams: dict[int, Stream] = {0: Stream(send_credit=2**32 - 1)}
 
@@ -170,6 +174,8 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("hello")
     commands.add_parser("status")
+    commands.add_parser("clock-get")
+    commands.add_parser("clock-sync")
     commands.add_parser("diagnostics")
     operation = commands.add_parser("operation-status")
     operation.add_argument("operation", type=int)
@@ -192,6 +198,10 @@ def main() -> None:
             result = client.rpc("device.hello")
         elif args.command == "status":
             result = client.rpc("device.status")
+        elif args.command == "clock-get":
+            result = client.rpc("clock.get")
+        elif args.command == "clock-sync":
+            result = client.rpc("clock.set", {"unix_seconds": int(time.time())})
         elif args.command == "diagnostics":
             result = client.rpc("diagnostics.get")
         elif args.command == "operation-status":

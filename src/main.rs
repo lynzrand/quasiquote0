@@ -7,12 +7,14 @@ use quasiquote0::display::{Epd, EpdPins};
 use quasiquote0::frame::Projection;
 use quasiquote0::jsonrpc;
 use quasiquote0::pull_schedule::PullSchedule;
+use quasiquote0::refresh_policy::{RefreshKey, RefreshTracker};
 use quasiquote0::rpc::ControlRpc;
 use quasiquote0::status_bar::{BatteryMarker, StatusBar, WifiMarker};
 use quasiquote0::usb_serial::UsbSerial;
 use quasiquote0::wifi::WifiStation;
 use quasiquote0::yamux::{Mode, Yamux};
 use quasiquote0::{battery, link_patches};
+use quasiquote0::{clock_face, rtc_schedule, wall_clock};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -32,6 +34,7 @@ fn main() {
     let usb = UsbSerial::new(usb_serial, pins.gpio18, pins.gpio19).expect("USB setup failed");
     let yamux = Yamux::start(usb, Mode::Server).expect("Yamux driver failed");
     let mut rpc = ControlRpc::mount(yamux.clone());
+    let _ = quasiquote0::power::arm_wake_sources(60);
     let Some(device) = rpc.device_handle() else {
         jsonrpc::serve(yamux.control_stream(), &mut rpc).expect("recovery JSON-RPC failed");
         return;
@@ -79,9 +82,8 @@ fn main() {
     );
 }
 
-/// Steady-state scheduler. USB-powered devices stay awake, serve the control
-/// protocol, and run interval pulls. Battery devices perform one conditional
-/// pull and redisplay per wake, then deep-sleep until the timer or VBUS.
+/// Minute wakes update the entire status strip. Pull deadlines use a separate
+/// RTC counter and survive deep sleep, so a clock wake does not start Wi-Fi.
 fn run_appliance(
     mut display: Option<&mut Epd<'_>>,
     device: Arc<Mutex<quasiquote0::device::Device>>,
@@ -89,163 +91,180 @@ fn run_appliance(
     wifi_marker: Arc<Mutex<Option<WifiMarker>>>,
     bluetooth: Option<&quasiquote0::bluetooth::Bluetooth>,
 ) -> ! {
-    let mut pull_schedule = PullSchedule::default();
+    let mut pull_schedule = rtc_schedule::load();
+    let mut refreshes = RefreshTracker::default();
+    // A bar-disabled timer wake retains unchanged content without a panel
+    // refresh. Other boots re-establish a trustworthy visible image.
+    if quasiquote0::power::guard().timer_wake {
+        let device = device.lock().unwrap();
+        if !device.config().display.status_bar
+            && device.state().displayed_status_bar == Some(false)
+            && device.state().firmware_version.as_deref() == Some(env!("CARGO_PKG_VERSION"))
+        {
+            if let Ok(content) = device.desired_digest() {
+                if device.state().displayed_content_sha256.as_deref()
+                    == Some(&quasiquote0::frame::digest_hex(&content))
+                {
+                    refreshes.succeeded(RefreshKey::new(
+                        content,
+                        false,
+                        wall_clock::unix_seconds(),
+                    ));
+                }
+            }
+        }
+    }
+    *wifi_marker.lock().unwrap() = Some(if pull_schedule.consecutive_failures() > 0 {
+        WifiMarker::Failed
+    } else {
+        WifiMarker::Disconnected
+    });
     loop {
-        let battery = quasiquote0::battery::read();
-        let usb_mode = quasiquote0::power::must_stay_awake();
+        let battery = battery::read();
+        // Critical-cell protection wins over the heartbeat and recovery window.
+        // USB power still permits operation while the cell is charging.
+        if !battery.usb_present
+            && battery
+                .millivolts
+                .is_some_and(|mv| mv < quasiquote0::power::CRITICAL_BATTERY_MV)
+        {
+            rtc_schedule::save(&pull_schedule);
+            let _ = quasiquote0::power::try_deep_sleep(quasiquote0::power::CRITICAL_SLEEP_SECONDS);
+            esp_idf_hal::delay::FreeRtos::delay_ms(1_000);
+            continue;
+        }
 
         if let Some(bluetooth) = bluetooth {
             bluetooth.advertise(&quasiquote0::bluetooth::BthomeAdvertisement {
                 battery_percent: battery.percent.unwrap_or_default() as u8,
                 battery_mv: battery.millivolts.unwrap_or_default() as u16,
                 battery_low: battery.percent.is_some_and(|percent| percent < 20),
-                // The board exposes VBUS, not a charger-status pin; USB
-                // presence is the closest honest signal.
                 charging: battery.usb_present,
                 wifi_connected: matches!(*wifi_marker.lock().unwrap(), Some(WifiMarker::Connected)),
                 usb_present: battery.usb_present,
             });
         }
-        let bluetooth_present = bluetooth.is_some_and(|b| b.is_advertising());
-
-        if usb_mode {
-            let now_ms = (unsafe { esp_idf_sys::esp_timer_get_time() } / 1_000) as u64;
-            if let Some(wifi) = wifi.as_mut() {
-                run_scheduled_pull(
-                    &device,
-                    wifi,
-                    &wifi_marker,
-                    now_ms,
-                    &mut pull_schedule,
-                    false,
-                );
-            }
-            refresh_pending_frame(
-                display.as_deref_mut(),
-                &device,
-                &wifi_marker,
-                bluetooth_present,
-            );
-            esp_idf_hal::delay::FreeRtos::delay_ms(1_000);
-            continue;
+        if let Some(wifi) = wifi.as_mut() {
+            run_scheduled_pull(&device, wifi, &wifi_marker, &mut pull_schedule);
         }
-
-        // Never cut power under an in-flight transfer.
-        if quasiquote0::rpc::uploads_active() {
-            esp_idf_hal::delay::FreeRtos::delay_ms(1_000);
-            continue;
-        }
-
-        // Battery mode: a critically low cell keeps the radio and panel off.
-        // While VBUS is present that state is only transient (charging), so
-        // the recheck cadence is short; on battery it waits for charge.
-        if battery
-            .millivolts
-            .is_some_and(|millivolts| millivolts < quasiquote0::power::CRITICAL_BATTERY_MV)
-        {
-            let _ = quasiquote0::power::try_deep_sleep(quasiquote0::power::CRITICAL_SLEEP_SECONDS);
-            esp_idf_hal::delay::FreeRtos::delay_ms(1_000);
-            continue;
-        }
-
-        let (config, _) = device.lock().unwrap().pull_snapshot();
-        if config.pull.enabled {
-            if let Some(wifi) = wifi.as_mut() {
-                // A battery wake is always due: the previous cycle slept a
-                // full interval (or VBUS disappeared mid-session).
-                let now_ms = (unsafe { esp_idf_sys::esp_timer_get_time() } / 1_000) as u64;
-                run_scheduled_pull(
-                    &device,
-                    wifi,
-                    &wifi_marker,
-                    now_ms,
-                    &mut pull_schedule,
-                    true,
-                );
-            }
-        }
-        // Settle any pending (re)display before losing power.
-        while refresh_pending_frame(
+        refresh_pending_frame(
             display.as_deref_mut(),
             &device,
             &wifi_marker,
-            bluetooth_present,
-        ) {}
-        let sleep_seconds = if config.pull.enabled {
-            config.pull.interval_seconds
+            bluetooth.is_some_and(|b| b.is_advertising()),
+            &mut refreshes,
+        );
+
+        let config = device.lock().unwrap().config().clone();
+        let mut sleep_seconds = if config.display.status_bar {
+            clock_face::seconds_until_next_minute(wall_clock::unix_seconds())
         } else {
             quasiquote0::power::IDLE_SLEEP_SECONDS
         };
+        if config.pull.enabled && wifi.is_some() {
+            sleep_seconds =
+                sleep_seconds.min(pull_schedule.seconds_until_due(rtc_schedule::now_ms()));
+        }
+        rtc_schedule::save(&pull_schedule);
         let _ = quasiquote0::power::try_deep_sleep(sleep_seconds);
-        esp_idf_hal::delay::FreeRtos::delay_ms(1_000);
+        esp_idf_hal::delay::FreeRtos::delay_ms(250);
     }
 }
 
-/// Display the desired frame when it differs from what is shown. Returns
-/// whether a refresh was performed; a pending frame survives a failed or
-/// absent display so a later boot retries it.
+/// Recompose from the producer's retained frame for content/layout changes or
+/// a new minute. A blank unconfigured device still gets the heartbeat strip.
 fn refresh_pending_frame(
     mut display: Option<&mut Epd<'_>>,
     device: &Arc<Mutex<quasiquote0::device::Device>>,
     wifi_marker: &Arc<Mutex<Option<WifiMarker>>>,
     bluetooth_present: bool,
-) -> bool {
+    refreshes: &mut RefreshTracker,
+) {
+    let Some(display) = display.as_deref_mut() else {
+        return;
+    };
+    let seconds = wall_clock::unix_seconds();
+    let now_ms = rtc_schedule::now_ms();
     let candidate = {
         let device = device.lock().unwrap();
-        match device.state().desired.as_ref() {
-            Some(desired)
-                if device.state().displayed_content_sha256.as_deref() != Some(&desired.sha256) =>
-            {
-                device
-                    .load_desired_frame()
-                    .ok()
-                    .flatten()
-                    .map(|frame| (frame, device.config().display.status_bar))
+        device.desired_digest().ok().and_then(|content| {
+            let key = RefreshKey::new(content, device.config().display.status_bar, seconds);
+            if !refreshes.is_due(key, now_ms) {
+                return None;
             }
-            _ => None,
-        }
+            match device.load_desired_frame() {
+                Ok(None) if device.state().desired.is_some() => None,
+                Ok(frame) => Some((frame.unwrap_or_default(), key)),
+                Err(_) => None,
+            }
+        })
     };
-    let (Some(display), Some((mut frame, status_bar))) = (display.as_deref_mut(), candidate) else {
-        return false;
+    let Some((mut frame, key)) = candidate else {
+        return;
     };
-    let content = frame.sha256();
-    if status_bar {
+    if key.status_bar {
         let battery = battery::read();
         StatusBar {
-            battery: StatusBar::from_battery_percent(battery.percent, false)
-                .or(Some(BatteryMarker::Critical)),
-            wifi: *wifi_marker.lock().unwrap(),
+            battery: if battery
+                .millivolts
+                .is_some_and(|mv| mv < quasiquote0::power::CRITICAL_BATTERY_MV)
+            {
+                Some(BatteryMarker::Critical)
+            } else {
+                StatusBar::from_battery_percent(battery.percent, false)
+            },
+            wifi: Some(
+                wifi_marker
+                    .lock()
+                    .unwrap()
+                    .unwrap_or(WifiMarker::Disconnected),
+            ),
             usb_present: battery.usb_present,
             bluetooth_present,
+            unix_seconds: Some(seconds),
         }
         .overlay(&mut frame);
     }
     let composed = frame.sha256();
-    let projected = frame.project(Projection::Clockwise);
-    if display.display(&projected).is_ok() {
-        let _ =
+    let result = display
+        .display(&frame.project(Projection::Clockwise))
+        .map_err(str::to_owned)
+        .and_then(|()| {
             device
                 .lock()
                 .unwrap()
-                .mark_displayed(&content, &composed, env!("CARGO_PKG_VERSION"));
+                .mark_displayed(
+                    &key.content,
+                    &composed,
+                    env!("CARGO_PKG_VERSION"),
+                    seconds,
+                    key.status_bar,
+                )
+                .map_err(|error| error.to_string())
+        });
+    match result {
+        Ok(()) => refreshes.succeeded(key),
+        Err(error) => {
+            refreshes.failed(rtc_schedule::now_ms());
+            device.lock().unwrap().display_error = Some(error);
+        }
     }
-    true
 }
 
 fn run_scheduled_pull(
     device: &Arc<Mutex<quasiquote0::device::Device>>,
     wifi: &mut WifiStation<'_>,
     wifi_marker: &Arc<Mutex<Option<WifiMarker>>>,
-    now_ms: u64,
     schedule: &mut PullSchedule,
-    force: bool,
 ) {
     let (config, validators) = device.lock().unwrap().pull_snapshot();
+    let now_ms = rtc_schedule::now_ms();
     let requested =
-        quasiquote0::rpc::PULL_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst) || force;
+        quasiquote0::rpc::PULL_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst);
     if !config.pull.enabled || !schedule.is_due(now_ms, requested) {
         return;
     }
+    device.lock().unwrap().pull_attempts += 1;
     *wifi_marker.lock().unwrap() = Some(WifiMarker::Connecting);
     let result = (|| -> Result<(), String> {
         wifi.configure(&config.wifi.ssid, &config.wifi.password)?;
@@ -294,11 +313,13 @@ fn run_scheduled_pull(
     })();
     match result {
         Ok(()) => {
-            schedule.succeeded(now_ms, config.pull.interval_seconds);
-            *wifi_marker.lock().unwrap() = Some(WifiMarker::Connected);
+            schedule.succeeded(rtc_schedule::now_ms(), config.pull.interval_seconds);
+            // The station is stopped below; the next status snapshot must not
+            // report an association that no longer exists.
+            *wifi_marker.lock().unwrap() = Some(WifiMarker::Disconnected);
         }
         Err(error) => {
-            schedule.failed(now_ms);
+            schedule.failed(rtc_schedule::now_ms());
             *wifi_marker.lock().unwrap() = Some(WifiMarker::Failed);
             let _ = device.lock().unwrap().record_pull_error(error);
         }

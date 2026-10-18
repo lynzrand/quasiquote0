@@ -14,6 +14,13 @@ pub struct PullSchedule {
 }
 
 impl PullSchedule {
+    pub fn restore(next_due_ms: u64, consecutive_failures: u8) -> Self {
+        Self {
+            next_due_ms,
+            consecutive_failures,
+        }
+    }
+
     pub fn is_due(&self, now_ms: u64, manually_requested: bool) -> bool {
         manually_requested || now_ms >= self.next_due_ms
     }
@@ -26,7 +33,9 @@ impl PullSchedule {
     pub fn failed(&mut self, now_ms: u64) {
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
         let shift = u32::from(self.consecutive_failures.saturating_sub(1)).min(16);
-        let delay = INITIAL_RETRY_MS.saturating_mul(1_u64 << shift).min(MAX_RETRY_MS);
+        let delay = INITIAL_RETRY_MS
+            .saturating_mul(1_u64 << shift)
+            .min(MAX_RETRY_MS);
         self.next_due_ms = now_ms.saturating_add(delay);
     }
 
@@ -36,6 +45,14 @@ impl PullSchedule {
 
     pub fn consecutive_failures(&self) -> u8 {
         self.consecutive_failures
+    }
+
+    /// Round up so a subsecond remainder cannot cause an early pull.
+    pub fn seconds_until_due(&self, now_ms: u64) -> u64 {
+        self.next_due_ms
+            .saturating_sub(now_ms)
+            .div_ceil(1_000)
+            .max(1)
     }
 }
 
@@ -70,5 +87,32 @@ mod tests {
         schedule.failed(0);
         assert!(!schedule.is_due(1, false));
         assert!(schedule.is_due(1, true));
+    }
+
+    #[test]
+    fn minute_wakes_do_not_advance_a_fifteen_minute_pull() {
+        let mut schedule = PullSchedule::default();
+        schedule.succeeded(0, 900);
+        for minute in 1..15 {
+            // Emulate reconstructing the scheduler on every deep-sleep boot.
+            schedule =
+                PullSchedule::restore(schedule.next_due_ms(), schedule.consecutive_failures());
+            assert!(!schedule.is_due(minute * 60_000, false));
+        }
+        assert!(schedule.is_due(900_000, false));
+        assert_eq!(schedule.seconds_until_due(899_001), 1);
+    }
+
+    #[test]
+    fn failure_backoff_survives_clock_only_wakes() {
+        let mut schedule = PullSchedule::default();
+        for _ in 0..4 {
+            let now = schedule.next_due_ms();
+            schedule.failed(now);
+        }
+        let restored =
+            PullSchedule::restore(schedule.next_due_ms(), schedule.consecutive_failures());
+        assert_eq!(restored, schedule);
+        assert!(!restored.is_due(schedule.next_due_ms() - 1, false));
     }
 }

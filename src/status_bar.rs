@@ -1,13 +1,21 @@
 //! The small device-owned status overlay described in the proposal.
 //!
 //! The supplied one-bit icons are compiled into the firmware. The bar never
-//! owns refresh scheduling; callers compose it only when they have already
-//! decided to refresh the panel.
+//! owns refresh scheduling; callers compose a complete snapshot for content
+//! changes and each minute heartbeat.
 
+use crate::clock_face::ClockFace;
 use crate::frame::{Frame, HEIGHT, WIDTH};
 use crate::status_icons::{
     Icon, BATTERY_0, BATTERY_100, BATTERY_25, BATTERY_50, BATTERY_75, BATTERY_CRITICAL, BLUETOOTH,
-    CHARGING, WIFI_CONNECTED, WIFI_DISCONNECTED, WIFI_PULL_FAILED,
+    CHARGING, USB_POWER, WIFI_CONNECTED, WIFI_DISCONNECTED, WIFI_PULL_FAILED,
+};
+use core::convert::Infallible;
+use embedded_graphics::{
+    mono_font::{ascii::FONT_6X10, MonoTextStyle},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    text::Text,
 };
 
 pub const WIDTH_PIXELS: usize = 16;
@@ -22,6 +30,7 @@ pub enum BatteryMarker {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WifiMarker {
+    Disconnected,
     Connected,
     Connecting,
     Failed,
@@ -33,6 +42,8 @@ pub struct StatusBar {
     pub wifi: Option<WifiMarker>,
     pub usb_present: bool,
     pub bluetooth_present: bool,
+    /// Current UTC, sampled with the rest of the snapshot. Unknown renders --:--.
+    pub unix_seconds: Option<i64>,
 }
 
 impl StatusBar {
@@ -63,12 +74,19 @@ impl StatusBar {
             draw_icon(frame, 24, wifi_icon(marker));
         }
         if self.usb_present {
-            // A deliberately short placeholder until the USB icon is supplied.
-            draw_text(frame, CONTENT_WIDTH + 6, 47, "U");
+            draw_icon(frame, 48, USB_POWER);
         }
         if self.bluetooth_present {
-            draw_icon(frame, 64, BLUETOOTH);
+            draw_icon(frame, 72, BLUETOOTH);
         }
+        let text = ClockFace::at(self.unix_seconds.unwrap_or(0)).text();
+        Text::new(
+            &text,
+            Point::new(0, 7),
+            MonoTextStyle::new(&FONT_6X10, BinaryColor::Off),
+        )
+        .draw(&mut ClockTarget(frame))
+        .unwrap();
     }
 }
 
@@ -91,8 +109,39 @@ fn wifi_icon(marker: WifiMarker) -> Icon {
         WifiMarker::Connected => WIFI_CONNECTED,
         // There is no distinct association-progress artwork; disconnected is
         // the least misleading snapshot while association is incomplete.
-        WifiMarker::Connecting => WIFI_DISCONNECTED,
+        WifiMarker::Disconnected | WifiMarker::Connecting => WIFI_DISCONNECTED,
         WifiMarker::Failed => WIFI_PULL_FAILED,
+    }
+}
+
+/// Rotate HH:MM into the strip using the same orientation as the icon art.
+/// Its 30x10 source fits in the bottom 30 rows with a three-pixel side margin.
+struct ClockTarget<'a>(&'a mut Frame);
+
+impl OriginDimensions for ClockTarget<'_> {
+    fn size(&self) -> Size {
+        Size::new(30, 10)
+    }
+}
+
+impl DrawTarget for ClockTarget<'_> {
+    type Color = BinaryColor;
+    type Error = Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        for Pixel(point, color) in pixels {
+            if (0..30).contains(&point.x) && (0..10).contains(&point.y) {
+                self.0.set_pixel(
+                    CONTENT_WIDTH + 3 + 9 - point.y as usize,
+                    HEIGHT - 30 + point.x as usize,
+                    color == BinaryColor::On,
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -110,38 +159,6 @@ fn draw_icon(frame: &mut Frame, y: usize, icon: Icon) {
                 );
             }
         }
-    }
-}
-
-/// A 3 x 5 placeholder font. Glyph pixels are black (`0`) on the white panel.
-fn draw_text(frame: &mut Frame, x: usize, y: usize, text: &str) {
-    for (index, ch) in text.chars().enumerate() {
-        let glyph = glyph(ch);
-        for (row, bits) in glyph.iter().copied().enumerate() {
-            for column in 0..3 {
-                if bits & (0b100 >> column) != 0 {
-                    frame.set_pixel(x + index * 4 + column, y + row, false);
-                }
-            }
-        }
-    }
-}
-
-fn glyph(ch: char) -> [u8; 5] {
-    match ch {
-        '0' => [0b111, 0b101, 0b101, 0b101, 0b111],
-        '1' => [0b010, 0b110, 0b010, 0b010, 0b111],
-        '2' => [0b111, 0b001, 0b111, 0b100, 0b111],
-        '3' => [0b111, 0b001, 0b111, 0b001, 0b111],
-        '4' => [0b101, 0b101, 0b111, 0b001, 0b001],
-        'B' => [0b110, 0b101, 0b110, 0b101, 0b110],
-        'W' => [0b101, 0b101, 0b101, 0b111, 0b101],
-        'U' => [0b101, 0b101, 0b101, 0b101, 0b111],
-        'T' => [0b111, 0b010, 0b010, 0b010, 0b010],
-        '+' => [0b000, 0b010, 0b111, 0b010, 0b000],
-        '!' => [0b010, 0b010, 0b010, 0b000, 0b010],
-        '~' => [0b000, 0b000, 0b011, 0b110, 0b000],
-        _ => [0; 5],
     }
 }
 
@@ -177,5 +194,56 @@ mod tests {
             StatusBar::from_battery_percent(Some(100), false),
             Some(BatteryMarker::Level(4))
         );
+    }
+
+    #[test]
+    fn every_snapshot_preserves_all_content_pixels_and_clears_old_status() {
+        let original = Frame::black();
+        let mut frame = original.clone();
+        StatusBar {
+            battery: Some(BatteryMarker::Charging),
+            wifi: Some(WifiMarker::Failed),
+            usb_present: true,
+            bluetooth_present: true,
+            unix_seconds: Some(1_577_836_800),
+        }
+        .overlay(&mut frame);
+        for y in 0..HEIGHT {
+            for x in 0..CONTENT_WIDTH {
+                assert_eq!(frame.pixel_is_white(x, y), original.pixel_is_white(x, y));
+            }
+        }
+        StatusBar::default().overlay(&mut frame);
+        for y in 0..88 {
+            for x in CONTENT_WIDTH..WIDTH {
+                assert_eq!(frame.pixel_is_white(x, y), Some(true));
+            }
+        }
+    }
+
+    #[test]
+    fn minute_clock_changes_without_changing_the_content_or_other_icons() {
+        let mut first = Frame::white();
+        let mut next = Frame::white();
+        let seconds = 1_577_836_800;
+        StatusBar {
+            unix_seconds: Some(seconds),
+            ..Default::default()
+        }
+        .overlay(&mut first);
+        StatusBar {
+            unix_seconds: Some(seconds + 60),
+            ..Default::default()
+        }
+        .overlay(&mut next);
+        assert_ne!(first.as_bytes(), next.as_bytes());
+        for y in 0..HEIGHT - 30 {
+            for x in 0..WIDTH {
+                assert_eq!(first.pixel_is_white(x, y), next.pixel_is_white(x, y));
+            }
+        }
+        let mut unknown = Frame::white();
+        StatusBar::default().overlay(&mut unknown);
+        assert_ne!(unknown.as_bytes(), first.as_bytes());
     }
 }
