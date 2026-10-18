@@ -42,3 +42,7 @@ Retries have no deliberate delay by default; process startup and USB probing
 determine the actual rate, which is reported in the log. Use
 `-RetryDelayMilliseconds <milliseconds>` to throttle retries, or
 `-ReportIntervalSeconds 10` for more frequent progress reports.
+The log records COM-port appearance/disappearance and retains JTAG failures
+before a successful halt, including cases where COM is present but the JTAG
+adapter cannot be opened. The most recent such transcript is also saved as
+`last-interesting-attempt.log` in the Windows staging directory.

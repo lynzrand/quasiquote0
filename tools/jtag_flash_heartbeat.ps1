@@ -53,6 +53,8 @@ $clock = [Diagnostics.Stopwatch]::StartNew()
 $attempts = 0
 $lastReport = 0.0
 $lastReportAttempts = 0
+$lastPortPresent = $false
+$lastInterestingTranscript = ''
 $startInfo = [Diagnostics.ProcessStartInfo]::new()
 $startInfo.FileName = $openocd
 $startInfo.Arguments = '-s "' + $scripts + '" -f "' + $config + '"'
@@ -63,11 +65,17 @@ $startInfo.RedirectStandardOutput = $true
 Write-Log "ARMED: continuously trying JTAG init/halt, then flash; retry delay ${RetryDelayMilliseconds}ms; staged in $stage."
 while ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
     $attempts++
+    $portPresentBefore = [IO.Ports.SerialPort]::GetPortNames() -contains $Port
+    if ($portPresentBefore -ne $lastPortPresent) {
+        Write-Log "USB serial presence: $Port present=$portPresentBefore (attempt $attempts)."
+        $lastPortPresent = $portPresentBefore
+    }
     # init cannot be retried safely in the same OpenOCD process after a
     # missing adapter, so create a fresh process for each attempt.
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
     $output = [System.Collections.Generic.List[string]]::new()
+    $adapterMissing = $false
     try {
         $null = $process.Start()
         $stdout = $process.StandardOutput.ReadToEndAsync()
@@ -77,6 +85,7 @@ while ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
             # Avoid OpenOCD's slow target cleanup when the USB adapter is
             # absent. Never interrupt a connected target or an active flash.
             if ($line.Contains('esp_usb_jtag: could not find or open device!')) {
+                $adapterMissing = $true
                 # It can exit between emitting this line and our Kill call.
                 try { $process.Kill() } catch [System.ComponentModel.Win32Exception] {
                 } catch [System.InvalidOperationException] {
@@ -94,8 +103,19 @@ while ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
         $process.Dispose()
     }
     $transcript = $output -join "`n"
-    if ($transcript.Contains('CAUGHT:')) {
+    $portPresentAfter = [IO.Ports.SerialPort]::GetPortNames() -contains $Port
+    if ($portPresentAfter -ne $lastPortPresent) {
+        Write-Log "USB serial presence: $Port present=$portPresentAfter (after attempt $attempts)."
+        $lastPortPresent = $portPresentAfter
+    }
+    # Keep failures before a successful halt: they distinguish USB access
+    # failures from a target that connected but could not be examined/halted.
+    $interesting = -not $adapterMissing -or $portPresentBefore -or $portPresentAfter
+    if ($interesting -and $transcript -ne $lastInterestingTranscript) {
+        Write-Log "JTAG diagnostic attempt $attempts (adapter unavailable=$adapterMissing; $Port before=$portPresentBefore after=$portPresentAfter; exit=$result)."
         foreach ($line in $output) { Write-Log $line.ToString() }
+        Set-Content -LiteralPath (Join-Path $stage 'last-interesting-attempt.log') -Value $transcript -Encoding UTF8
+        $lastInterestingTranscript = $transcript
     }
     if ($result -eq 0 -and $transcript.Contains('FLASH_VERIFIED')) {
         Write-Log 'JTAG flash verified; checking for three USB heartbeats.'
