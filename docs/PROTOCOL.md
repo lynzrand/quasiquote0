@@ -114,8 +114,15 @@ HTTPS uses the ESP-IDF certificate bundle; plain HTTP requires
 - Failures back off exponentially 30 s → 1 h; a manual `pull.run`
   bypasses backoff.
 - Wi-Fi is brought up per pull attempt and stopped afterwards.
-- While USB-powered (`stay_awake_on_usb: true`, the default) the
-  device stays awake and serves the control protocol continuously.
+- USB power always keeps the device awake, regardless of the legacy
+  `stay_awake_on_usb` setting. GPIO0 VBUS detection and USB host-frame
+  detection independently prevent sleep. The legacy field is accepted for
+  configuration compatibility and now defaults consistently to true.
+- A cold boot or GPIO wake provides a 60-second recovery window; timer
+  wakes provide two seconds for USB enumeration. Battery sleep requires
+  successful timer and GPIO0-high wake configuration, followed by a final
+  USB/transfer check immediately before entering deep sleep. A wake-source
+  error leaves the MCU awake.
 - On battery the device performs one conditional pull per wake, then
   deep-sleeps until the next interval. Backoff state is RAM-only and
   resets across sleeps; interval spacing already bounds retry rate.

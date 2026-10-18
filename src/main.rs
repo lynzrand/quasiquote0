@@ -92,8 +92,7 @@ fn run_appliance(
     let mut pull_schedule = PullSchedule::default();
     loop {
         let battery = quasiquote0::battery::read();
-        let stay_awake = device.lock().unwrap().config().power.stay_awake_on_usb;
-        let usb_mode = battery.usb_present && stay_awake;
+        let usb_mode = quasiquote0::power::must_stay_awake();
 
         if let Some(bluetooth) = bluetooth {
             bluetooth.advertise(&quasiquote0::bluetooth::BthomeAdvertisement {
@@ -103,10 +102,7 @@ fn run_appliance(
                 // The board exposes VBUS, not a charger-status pin; USB
                 // presence is the closest honest signal.
                 charging: battery.usb_present,
-                wifi_connected: matches!(
-                    *wifi_marker.lock().unwrap(),
-                    Some(WifiMarker::Connected)
-                ),
+                wifi_connected: matches!(*wifi_marker.lock().unwrap(), Some(WifiMarker::Connected)),
                 usb_present: battery.usb_present,
             });
         }
@@ -115,7 +111,14 @@ fn run_appliance(
         if usb_mode {
             let now_ms = (unsafe { esp_idf_sys::esp_timer_get_time() } / 1_000) as u64;
             if let Some(wifi) = wifi.as_mut() {
-                run_scheduled_pull(&device, wifi, &wifi_marker, now_ms, &mut pull_schedule, false);
+                run_scheduled_pull(
+                    &device,
+                    wifi,
+                    &wifi_marker,
+                    now_ms,
+                    &mut pull_schedule,
+                    false,
+                );
             }
             refresh_pending_frame(
                 display.as_deref_mut(),
@@ -140,12 +143,9 @@ fn run_appliance(
             .millivolts
             .is_some_and(|millivolts| millivolts < quasiquote0::power::CRITICAL_BATTERY_MV)
         {
-            let seconds = if battery.usb_present {
-                quasiquote0::power::USB_ATTACHED_SLEEP_SECONDS
-            } else {
-                quasiquote0::power::CRITICAL_SLEEP_SECONDS
-            };
-            quasiquote0::power::enter_deep_sleep(seconds, !battery.usb_present);
+            let _ = quasiquote0::power::try_deep_sleep(quasiquote0::power::CRITICAL_SLEEP_SECONDS);
+            esp_idf_hal::delay::FreeRtos::delay_ms(1_000);
+            continue;
         }
 
         let (config, _) = device.lock().unwrap().pull_snapshot();
@@ -154,7 +154,14 @@ fn run_appliance(
                 // A battery wake is always due: the previous cycle slept a
                 // full interval (or VBUS disappeared mid-session).
                 let now_ms = (unsafe { esp_idf_sys::esp_timer_get_time() } / 1_000) as u64;
-                run_scheduled_pull(&device, wifi, &wifi_marker, now_ms, &mut pull_schedule, true);
+                run_scheduled_pull(
+                    &device,
+                    wifi,
+                    &wifi_marker,
+                    now_ms,
+                    &mut pull_schedule,
+                    true,
+                );
             }
         }
         // Settle any pending (re)display before losing power.
@@ -166,15 +173,11 @@ fn run_appliance(
         ) {}
         let sleep_seconds = if config.pull.enabled {
             config.pull.interval_seconds
-        } else if battery.usb_present {
-            // Sleeping while USB-powered (stay_awake_on_usb: false) cannot
-            // arm VBUS wake (already asserted); recheck instead of going
-            // dark for an hour.
-            quasiquote0::power::USB_ATTACHED_SLEEP_SECONDS
         } else {
             quasiquote0::power::IDLE_SLEEP_SECONDS
         };
-        quasiquote0::power::enter_deep_sleep(sleep_seconds, !battery.usb_present);
+        let _ = quasiquote0::power::try_deep_sleep(sleep_seconds);
+        esp_idf_hal::delay::FreeRtos::delay_ms(1_000);
     }
 }
 
@@ -191,8 +194,7 @@ fn refresh_pending_frame(
         let device = device.lock().unwrap();
         match device.state().desired.as_ref() {
             Some(desired)
-                if device.state().displayed_content_sha256.as_deref()
-                    != Some(&desired.sha256) =>
+                if device.state().displayed_content_sha256.as_deref() != Some(&desired.sha256) =>
             {
                 device
                     .load_desired_frame()
@@ -203,8 +205,7 @@ fn refresh_pending_frame(
             _ => None,
         }
     };
-    let (Some(display), Some((mut frame, status_bar))) = (display.as_deref_mut(), candidate)
-    else {
+    let (Some(display), Some((mut frame, status_bar))) = (display.as_deref_mut(), candidate) else {
         return false;
     };
     let content = frame.sha256();
@@ -222,11 +223,11 @@ fn refresh_pending_frame(
     let composed = frame.sha256();
     let projected = frame.project(Projection::Clockwise);
     if display.display(&projected).is_ok() {
-        let _ = device.lock().unwrap().mark_displayed(
-            &content,
-            &composed,
-            env!("CARGO_PKG_VERSION"),
-        );
+        let _ =
+            device
+                .lock()
+                .unwrap()
+                .mark_displayed(&content, &composed, env!("CARGO_PKG_VERSION"));
     }
     true
 }

@@ -15,6 +15,7 @@ pub mod i2c_probe;
 pub mod jsonrpc;
 pub mod ota;
 pub mod power;
+pub mod power_policy;
 pub mod pull;
 pub mod pull_schedule;
 pub mod rpc;

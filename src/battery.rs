@@ -53,14 +53,17 @@ pub fn read() -> BatteryStatus {
     BatteryStatus {
         millivolts,
         percent,
-        usb_present: vbus_present(),
+        usb_present: vbus_present() || unsafe { esp_idf_sys::usb_serial_jtag_is_connected() },
     }
 }
 
-fn vbus_present() -> bool {
-    unsafe {
+pub fn vbus_present() -> bool {
+    // Release any pin hold left by deep sleep before reading VBUS again.
+    static SETUP: std::sync::Once = std::sync::Once::new();
+    SETUP.call_once(|| unsafe {
+        esp_idf_sys::gpio_hold_dis(0);
         esp_idf_sys::esp_rom_gpio_pad_select_gpio(0);
         esp_idf_sys::gpio_set_direction(0, esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT);
-        esp_idf_sys::gpio_get_level(0) != 0
-    }
+    });
+    unsafe { esp_idf_sys::gpio_get_level(0) != 0 }
 }

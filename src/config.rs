@@ -56,11 +56,20 @@ pub struct DisplayConfig {
     pub status_bar: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PowerConfig {
+    /// Retained for schema compatibility. USB power always keeps the MCU awake.
     #[serde(default = "default_stay_awake_on_usb")]
     pub stay_awake_on_usb: bool,
+}
+
+impl Default for PowerConfig {
+    fn default() -> Self {
+        Self {
+            stay_awake_on_usb: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -185,6 +194,7 @@ mod tests {
         let config = Config::default();
         assert!(!config.pull.enabled);
         assert!(config.display.status_bar);
+        assert!(config.power.stay_awake_on_usb);
         assert!(config.validate().is_ok());
     }
 
@@ -198,6 +208,14 @@ mod tests {
             config.validate(),
             Err(ConfigError("pull.url must use https"))
         );
+    }
+
+    #[test]
+    fn omitted_power_and_empty_power_have_the_same_safe_defaults() {
+        let omitted: Config = serde_json::from_str("{}").unwrap();
+        let empty: Config = serde_json::from_str(r#"{"power":{}}"#).unwrap();
+        assert_eq!(omitted.power, empty.power);
+        assert!(omitted.power.stay_awake_on_usb);
     }
 
     #[test]

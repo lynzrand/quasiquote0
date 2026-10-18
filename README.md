@@ -82,6 +82,13 @@ GPIO20 powers the EPD panel and is also UART0 TX on the ESP32-C3. The project
 therefore configures ESP-IDF with no UART console. USB Serial/JTAG is the
 supported host transport.
 
+USB power always keeps the MCU awake. Both GPIO0 VBUS sensing and USB host
+activity guard against sleep, including when old configuration contains
+`stay_awake_on_usb: false`. Cold boots and GPIO wakes allow 60 seconds for
+recovery; timer wakes allow two seconds for enumeration. Battery sleep is
+allowed only after both a timer and GPIO0-high USB-insertion wake source
+are successfully armed. Wake-source errors keep the device awake.
+
 ## Flash layout
 
 The 4 MiB device uses the minimum 12 KiB NVS partition, OTA metadata, `ota_0`
