@@ -23,6 +23,11 @@ control channel. Both wake sources armed without error. The 26 host tests
 cover status boundaries, refresh retry/heartbeat behavior, and pull deadlines
 across clock-only wakes. Long-run battery life remains unmeasured.
 
+An opt-in status-window experiment subsequently confined the stock waveform
+to the strip on USB, with user-confirmed visual isolation. It is not a fast
+differential waveform and does not retain its partial baseline across battery
+sleep. See [`PARTIAL_REFRESH.md`](PARTIAL_REFRESH.md) for results and scope.
+
 The frame client already implements USB management, durable frames,
 HTTP(S) pulling, display composition, battery scheduling, and streamed OTA.
 Implementation alone does not satisfy the acceptance criteria below. The next

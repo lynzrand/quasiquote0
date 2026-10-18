@@ -226,24 +226,49 @@ fn refresh_pending_frame(
         .overlay(&mut frame);
     }
     let composed = frame.sha256();
-    let result = display
-        .display(&frame.project(Projection::Clockwise))
-        .map_err(str::to_owned)
-        .and_then(|()| {
-            device
-                .lock()
-                .unwrap()
-                .mark_displayed(
-                    &key.content,
-                    &composed,
-                    env!("CARGO_PKG_VERSION"),
-                    seconds,
-                    key.status_bar,
-                )
-                .map_err(|error| error.to_string())
-        });
+    let projected = frame.project(Projection::Clockwise);
+    let partial = cfg!(feature = "experimental-partial") && refreshes.can_refresh_status_only(key);
+    let started = rtc_schedule::now_ms();
+    let mut mode = if partial { "partial-window" } else { "full" };
+    let mut partial_error = None;
+    let transfer = if partial {
+        match display.display_status_strip(&projected) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                partial_error = Some(error.to_owned());
+                mode = "full-fallback";
+                display.display(&projected)
+            }
+        }
+    } else {
+        display.display(&projected)
+    };
+    let elapsed = rtc_schedule::now_ms().saturating_sub(started);
+    let result = transfer.map_err(str::to_owned).and_then(|()| {
+        device
+            .lock()
+            .unwrap()
+            .mark_displayed(
+                &key.content,
+                &composed,
+                env!("CARGO_PKG_VERSION"),
+                seconds,
+                key.status_bar,
+            )
+            .map_err(|error| error.to_string())
+    });
     match result {
-        Ok(()) => refreshes.succeeded(key),
+        Ok(()) => {
+            if mode == "partial-window" {
+                refreshes.partial_succeeded(key);
+            } else {
+                refreshes.succeeded(key);
+            }
+            let mut device = device.lock().unwrap();
+            device.display_refresh_mode = mode;
+            device.display_refresh_ms = elapsed;
+            device.partial_refresh_error = partial_error;
+        }
         Err(error) => {
             refreshes.failed(rtc_schedule::now_ms());
             device.lock().unwrap().display_error = Some(error);

@@ -18,6 +18,9 @@ pub struct Device {
     pub display_clock: Option<i64>,
     pub display_refreshes: u32,
     pub display_error: Option<String>,
+    pub display_refresh_mode: &'static str,
+    pub display_refresh_ms: u64,
+    pub partial_refresh_error: Option<String>,
     pub pull_attempts: u32,
 }
 
@@ -52,6 +55,9 @@ impl Device {
             display_clock: None,
             display_refreshes: 0,
             display_error: None,
+            display_refresh_mode: "none",
+            display_refresh_ms: 0,
+            partial_refresh_error: None,
             pull_attempts: 0,
         })
     }

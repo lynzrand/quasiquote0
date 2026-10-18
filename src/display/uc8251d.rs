@@ -257,6 +257,35 @@ impl<'d> Epd<'d> {
         self.sleep()
     }
 
+    /// Experimental area-limited stock-waveform refresh, not a fast
+    /// differential waveform. The caller must have already displayed the
+    /// same content with an enabled status strip. Only 304 bytes per plane
+    /// are transferred; the existing voltage and LUT settings are retained.
+    pub fn display_status_strip(&mut self, frame: &Frame) -> Result<(), &'static str> {
+        let result = (|| {
+            self.power_on()?;
+            self.command(0x91); // PTIN
+            self.command(0x90); // PTL
+            self.data(&super::status_window::COMMAND);
+            self.command(0x10);
+            self.data(&[0; super::status_window::BYTES]);
+            self.command(0x13);
+            self.data(super::status_window::plane(frame));
+            self.command(0x12);
+            FreeRtos::delay_ms(100);
+            self.wait_idle(12_000)?;
+            self.command(0x92); // PTOUT
+            self.sleep()
+        })();
+        if result.is_err() {
+            // Force a cold controller initialization for the full fallback;
+            // no partial addressing state may leak into its frame transfer.
+            let _ = self.power.set_low();
+            self.sleeping = true;
+        }
+        result
+    }
+
     /// Power down the controller after a completed refresh. The panel retains
     /// its image; the next display runs the full board-proven init sequence.
     pub fn sleep(&mut self) -> Result<(), &'static str> {

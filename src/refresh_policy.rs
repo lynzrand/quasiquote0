@@ -23,6 +23,7 @@ impl RefreshKey {
 pub struct RefreshTracker {
     displayed: Option<RefreshKey>,
     retry_after_ms: u64,
+    partials: u8,
 }
 
 impl RefreshTracker {
@@ -33,9 +34,27 @@ impl RefreshTracker {
     pub fn succeeded(&mut self, key: RefreshKey) {
         self.displayed = Some(key);
         self.retry_after_ms = 0;
+        self.partials = 0;
+    }
+
+    pub fn can_refresh_status_only(&self, key: RefreshKey) -> bool {
+        self.partials < 4
+            && self.displayed.is_some_and(|previous| {
+                previous.status_bar && key.status_bar && previous.content == key.content
+            })
+    }
+
+    pub fn partial_succeeded(&mut self, key: RefreshKey) {
+        self.displayed = Some(key);
+        self.retry_after_ms = 0;
+        self.partials += 1;
     }
 
     pub fn failed(&mut self, now_ms: u64) {
+        // A failed transfer may have altered visible pixels. The next
+        // attempt must establish a full baseline before another window.
+        self.displayed = None;
+        self.partials = 0;
         self.retry_after_ms = now_ms.saturating_add(5_000);
     }
 }
@@ -74,5 +93,27 @@ mod tests {
         assert!(tracker.is_due(first, 5_100));
         tracker.succeeded(first);
         assert!(!tracker.is_due(first, 5_100));
+        tracker.failed(5_200);
+        assert!(!tracker.can_refresh_status_only(first));
+        assert!(tracker.is_due(first, 10_200));
+    }
+
+    #[test]
+    fn partial_updates_require_a_full_baseline_and_periodic_cleanup() {
+        let mut tracker = RefreshTracker::default();
+        let first = RefreshKey::new([1; 32], true, 0);
+        assert!(!tracker.can_refresh_status_only(first));
+        tracker.succeeded(first);
+        assert!(!tracker.can_refresh_status_only(RefreshKey::new([2; 32], true, 60)));
+        assert!(!tracker.can_refresh_status_only(RefreshKey::new([1; 32], false, 60)));
+        for minute in 1..=4 {
+            let key = RefreshKey::new([1; 32], true, minute * 60);
+            assert!(tracker.can_refresh_status_only(key));
+            tracker.partial_succeeded(key);
+        }
+        let cleanup = RefreshKey::new([1; 32], true, 300);
+        assert!(!tracker.can_refresh_status_only(cleanup));
+        tracker.succeeded(cleanup);
+        assert!(tracker.can_refresh_status_only(RefreshKey::new([1; 32], true, 360)));
     }
 }

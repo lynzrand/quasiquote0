@@ -87,6 +87,12 @@ Unknown time displays `--:--`; a complete power loss requires synchronization.
 Current display acknowledgment updates in RAM, so clock ticks do not write
 LittleFS state each minute.
 
+An opt-in `experimental-partial` feature confines unchanged-content status
+updates to the strip after a full baseline in the same boot. This was visually
+verified on USB; it uses the stock waveform and has no measured speed gain.
+Battery wakes still use full refresh. See
+[`docs/PARTIAL_REFRESH.md`](docs/PARTIAL_REFRESH.md) for the experiment and limits.
+
 For the recovered Windows setup, build `--bin quasiquote0`, convert its ELF
 with the same esptool options above, and pass that image to
 `tools/flash_app_windows.ps1 -Image <image.bin>`. This keeps the recovered

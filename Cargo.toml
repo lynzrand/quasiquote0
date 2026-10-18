@@ -10,6 +10,10 @@ rust-version = "1.82"
 [profile.release]
 opt-level = "s"
 
+[features]
+# Opt-in hardware experiment; the normal firmware keeps its proven full refresh.
+experimental-partial = []
+
 [profile.dev]
 debug = true    # Symbols are nice, and they don't increase the size on Flash
 opt-level = "z"

@@ -158,7 +158,9 @@ impl DeviceRpc {
                 status["mode"] = serde_json::json!("frame-client");
                 status["display"] = serde_json::json!({
                     "time":device.display_clock.map(|seconds| crate::clock_face::ClockFace::at(seconds).text()),
-                    "refreshes":device.display_refreshes, "error":device.display_error});
+                    "refreshes":device.display_refreshes, "error":device.display_error,
+                    "refresh_mode":device.display_refresh_mode, "refresh_ms":device.display_refresh_ms,
+                    "partial_error":device.partial_refresh_error});
                 let guard = crate::power::guard();
                 let (armed, error) = crate::power::wake_status();
                 status["power"] = serde_json::json!({
