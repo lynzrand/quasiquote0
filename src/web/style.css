@@ -52,3 +52,28 @@ pre {
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
 .check { display: flex; gap: 8px; align-items: center; }
 @media (max-width: 560px) { .grid { display: block; } }
+
+.frame-preview {
+  position: relative;
+  max-width: 592px;
+  border: 1px solid #9ba594;
+  background: white;
+}
+#framePreview { display: block; width: 100%; image-rendering: pixelated; }
+#statusZone {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: calc(100% * 16 / 296);
+  background: #455c4540;
+  border-left: 1px dashed #455c45;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#statusZone[hidden] { display: none; }
+#statusZone span { writing-mode: vertical-rl; font: 11px system-ui; color: #283328; }
+input[type=range] { padding: 0; accent-color: #455c45; }
+#frameInfo { color: #596653; font-size: .9rem; }

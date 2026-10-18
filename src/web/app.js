@@ -1,8 +1,10 @@
 import { sha256 } from './sha256.js';
+import { FrameEditor } from './frame-editor.js';
 
 const $ = id => document.getElementById(id);
 let config = null;
 let busy = false;
+const editor = new FrameEditor({ message, statusBar: () => config?.display.status_bar ?? true });
 const fragment = new URLSearchParams(location.hash.slice(1));
 $('access').value = fragment.get('token') || sessionStorage.getItem('quote0-token') || '';
 if (location.hash) history.replaceState(null, '', location.pathname);
@@ -37,17 +39,20 @@ async function load() {
   $('enabled').checked = config.pull.enabled;
   $('insecure').checked = config.pull.allow_insecure_http;
   $('bar').checked = config.display.status_bar;
+  editor.render();
   message('Connected');
 }
 async function run(action) {
   if (busy) return;
   busy = true;
   document.querySelectorAll('button').forEach(button => button.disabled = true);
+  editor.setBusy(true);
   try { await action(); }
   catch (error) { message(error.message); }
   finally {
     busy = false;
     document.querySelectorAll('button').forEach(button => button.disabled = false);
+    editor.setBusy(false);
   }
 }
 $('connect').onclick = () => run(load);
@@ -75,24 +80,30 @@ $('settings').onsubmit = event => {
     next.display.status_bar = $('bar').checked;
     await api('config', 'POST', JSON.stringify(next), { 'Content-Type': 'application/json' });
     config = next;
+    editor.render();
     message('Settings saved. Reconnect if the Wi-Fi address changes.');
   });
 };
-async function upload(id, path) {
-  const file = $(id).files[0];
-  if (!file) throw Error('Choose a .bin file');
-  if (id === 'frame' && file.size !== 5624) throw Error('Frame must be exactly 5,624 bytes');
-  if (id === 'firmware' && (file.size === 0 || file.size > 1966080)) {
-    throw Error('Firmware image is too large or empty');
-  }
-  message('Uploading…');
-  const data = await file.arrayBuffer();
+async function sendBytes(path, data) {
   await api(path, 'PUT', data, {
     'Content-Type': 'application/octet-stream', 'X-Content-SHA256': sha256(data),
   });
-  message(id === 'firmware' ? 'Update verified. Restarting…' : 'Frame accepted');
-  if (id === 'frame') await refresh();
 }
-$('sendFrame').onclick = () => run(() => upload('frame', 'frame'));
-$('sendFirmware').onclick = () => run(() => upload('firmware', 'firmware'));
+$('sendFrame').onclick = () => run(async () => {
+  if (!config) throw Error('Connect first to match the device status-bar layout');
+  if (!editor.bytes || editor.loading) throw Error('Choose an image or frame first');
+  const frame = editor.bytes.slice();
+  message('Uploading frame…');
+  await sendBytes('frame', frame);
+  message('Frame accepted. The display will refresh shortly.');
+  await refresh();
+});
+$('sendFirmware').onclick = () => run(async () => {
+  const file = $('firmware').files[0];
+  if (!file) throw Error('Choose an application .bin file');
+  if (file.size === 0 || file.size > 1966080) throw Error('Firmware image is too large or empty');
+  message('Uploading firmware…');
+  await sendBytes('firmware', await file.arrayBuffer());
+  message('Update verified. Restarting…');
+});
 if ($('access').value) run(load);

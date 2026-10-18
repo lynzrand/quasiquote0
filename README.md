@@ -47,6 +47,20 @@ client and watcher apply to old firmware and the standalone diagnostic; they
 are not the normal application's management interface. See
 [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the current APIs.
 
+### Image uploads
+
+Choose a PNG, JPEG, WebP, or existing frame `.bin` in **Display an image**.
+The browser resizes using fit (white margins) or centered crop, composites
+transparency onto white, and converts to monochrome with an adjustable
+threshold and optional Floyd–Steinberg dithering. Preview the exact pixels,
+download the 5,624-byte frame, or upload it directly.
+
+Conversion uses the device's saved status-bar setting: 280 × 152 content
+pixels plus the reserved strip, or the full 296 × 152 when the bar is off.
+Save a status-bar setting change before converting for that layout. Existing
+`.bin` uploads preserve their bytes; the shaded strip shows what the firmware
+will overlay. All image processing stays in the browser.
+
 ### Minute status heartbeat
 
 The complete right-hand status strip updates every minute: battery, Wi-Fi,
@@ -166,6 +180,18 @@ The generated page is committed so firmware-only builds remain usable offline
 without Node. After editing web sources, run `pnpm build`; `pnpm test` checks
 that the committed asset matches the sources. No runtime package or CDN is
 needed on the device or in the browser.
+
+`pnpm test` checks SHA-256, conversion geometry/packing/transparency/dithering,
+and generated-asset freshness. To run actual browser decoding and UI tests,
+start a separate Chromium/Edge profile with `--remote-debugging-port=9222`, then:
+
+```console
+QUOTE0_CDP_URL=http://127.0.0.1:9222 pnpm test:browser
+```
+
+For a Windows browser driven from WSL, also set `QUOTE0_BROWSER_DOWNLOAD_DIR`
+to an absolute Windows temporary directory so test downloads use the browser's
+filesystem. The tests use a fresh context and mocked device APIs.
 
 ## Verification
 

@@ -66,10 +66,34 @@
 </form>
 </section>
 <section>
-<h2>Display a frame</h2>
-<p>Upload a 296 × 152 monochrome frame: 5,624 bytes, MSB first, 1 = white. The rightmost 16 columns are reserved when the status bar is enabled.</p>
-<input id="frame" type="file" accept=".bin">
-<button id="sendFrame">Upload frame</button>
+<h2>Display an image</h2>
+<p>Choose a PNG, JPEG, or WebP image. Conversion and preview happen in your browser.</p>
+<label for="frame">Image or existing frame</label>
+<input id="frame" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,.bin">
+<div class="grid" id="imageControls">
+  <div>
+    <label for="imageFit">Image sizing</label>
+    <select id="imageFit" disabled>
+      <option value="fit">Fit · white margins</option>
+      <option value="crop">Fill · crop to center</option>
+    </select>
+  </div>
+  <div>
+    <label for="threshold">Black/white threshold: <output id="thresholdValue">128</output></label>
+    <input id="threshold" type="range" min="0" max="255" value="128" disabled>
+  </div>
+</div>
+<label class="check"><input id="dither" type="checkbox" disabled> Dither for photo shading</label>
+<p id="frameInfo" role="status">No image selected. Existing 5,624-byte .bin frames also work.</p>
+<div id="previewArea" hidden>
+  <div class="frame-preview">
+    <canvas id="framePreview" width="296" height="152" aria-label="Monochrome frame preview"></canvas>
+    <div id="statusZone" aria-label="Reserved status bar"><span>Status</span></div>
+  </div>
+  <p><small id="layoutNote"></small></p>
+</div>
+<button id="downloadFrame" type="button" disabled>Download frame .bin</button>
+<button id="sendFrame" type="button" disabled>Upload to display</button>
 </section>
 <section>
 <h2>Firmware update</h2>

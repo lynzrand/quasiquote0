@@ -88,7 +88,12 @@ storage. This is a local HTTP service; use it on a trusted network.
 Frame/firmware requests require `Content-Length` and `X-Content-SHA256` (64
 lowercase hex digits). Firmware length is nonzero and no more than 1,966,080
 bytes. The browser computes the digest before uploading; the device verifies it
-independently. Uploads stream in 512-byte chunks. Frame deadlines are 15 s,
+independently. Its image picker converts PNG/JPEG/WebP locally with canvas,
+fit or centered crop, a threshold, and optional Floyd–Steinberg dithering.
+Transparency becomes white. Conversion respects the saved status-bar setting;
+reserved columns remain white in converted files. Preview and `.bin` download
+use the same packed bytes as upload. Existing frame `.bin` bytes are preserved.
+No image decoder or conversion work runs on the ESP32. Uploads stream in 512-byte chunks. Frame deadlines are 15 s,
 firmware deadlines 120 s, with the SDK's 5 s idle receive timeout. USB removal
 aborts an upload before publication or OTA boot selection.
 

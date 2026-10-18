@@ -108,3 +108,29 @@ exhaust heap and reset during TLS; those are not the installed final build.
 Windows setup and flash scripts were parsed with the PowerShell parser.
 JTAG flashing now detects the active OTA slot through USB; explicit `-Slot`
 is required when recovery cannot query it. It does not change boot selection.
+
+## Image converter follow-up
+
+The UI now has readable HTML/CSS/JavaScript sources, bundled into one committed
+page with esbuild. PNG/JPEG/WebP decoding, fit/center-crop resizing, alpha
+composition onto white, thresholding, optional Floyd–Steinberg dithering,
+preview, and `.bin` download all run in the browser. The upload API and firmware
+pixel-processing path are unchanged. The saved status-bar setting determines
+whether conversion uses 280 or 296 content columns; raw `.bin` files remain
+byte-for-byte intact.
+
+The converter build has a 13,975-byte page and a 1,832,496-byte application
+image, adding 5,856 bytes (5.72 KiB) over the initial browser-management build
+above. Each OTA slot retains 133,584 bytes (130.45 KiB) of headroom. It was
+installed through HTTP OTA, booted and confirmed in `ota_0`, and retained the
+configured Wi-Fi network and existing picture at upgrade time.
+
+Seven conversion checks cover canonical bit order/length, status reservation,
+alpha, threshold boundaries, diffusion coverage, fit/crop geometry, and invalid
+input. A real headless Edge workflow decoded PNG/JPEG/WebP, checked exact
+preview/download/upload bytes and SHA-256, saved layout changes, exercised
+crop/dither controls, preserved raw BIN data, and rejected malformed files.
+A separate live-device browser check authenticated against the actual served
+page and converted a local PNG at a 390-pixel viewport without writing a frame
+or configuration. No horizontal overflow or browser script errors occurred. The user then
+confirmed successful on-device operation after uploading several pictures.
