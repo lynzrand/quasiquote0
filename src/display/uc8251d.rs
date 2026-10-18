@@ -137,7 +137,7 @@ impl<'d> Epd<'d> {
         Ok(())
     }
 
-    fn write(&mut self, data_command: bool, bytes: &[u8]) {
+    fn write(&mut self, data_command: bool, bytes: &[u8]) -> Result<(), &'static str> {
         if data_command {
             let _ = self.data_command.set_high();
         } else {
@@ -152,22 +152,24 @@ impl<'d> Epd<'d> {
                 },
                 ..Default::default()
             };
-            unsafe {
-                esp_idf_sys::esp!(esp_idf_sys::spi_device_polling_transmit(
-                    self.spi,
-                    &mut transaction,
-                ))
-                .expect("EPD SPI transfer");
+            let result =
+                unsafe { esp_idf_sys::spi_device_polling_transmit(self.spi, &mut transaction) };
+            if result != esp_idf_sys::ESP_OK {
+                let _ = self.chip_select.set_high();
+                let _ = self.power.set_low();
+                self.sleeping = true;
+                return Err("EPD SPI transfer failed");
             }
         }
         let _ = self.chip_select.set_high();
+        Ok(())
     }
 
-    fn command(&mut self, command: u8) {
-        self.write(false, &[command]);
+    fn command(&mut self, command: u8) -> Result<(), &'static str> {
+        self.write(false, &[command])
     }
-    fn data(&mut self, data: &[u8]) {
-        self.write(true, data);
+    fn data(&mut self, data: &[u8]) -> Result<(), &'static str> {
+        self.write(true, data)
     }
 
     /// Bring the panel supply, controller, and scan configuration online.
@@ -188,37 +190,37 @@ impl<'d> Epd<'d> {
             self.reset.set_high().map_err(|_| "EPD reset pin error")?;
             FreeRtos::delay_ms(20);
         }
-        self.command(0x00);
-        self.data(&[0xf3, 0x0e]);
-        self.command(0x01);
-        self.data(&[0x03, 0x00, 0x3f, 0x3f, 0x03]);
-        self.command(0x06);
-        self.data(&[0x17, 0x17, 0x17]);
-        self.command(0x61);
-        self.data(&[0x98, 0x01, 0x28]);
-        self.command(0x30);
-        self.data(&[0x1b]);
-        self.command(0x60);
-        self.data(&[0x22]);
-        self.command(0x82);
-        self.data(&[0x00]);
-        self.command(0x03);
-        self.data(&[0x10]);
-        self.command(0x50);
-        self.data(&[0x97]);
-        self.command(0x04);
+        self.command(0x00)?;
+        self.data(&[0xf3, 0x0e])?;
+        self.command(0x01)?;
+        self.data(&[0x03, 0x00, 0x3f, 0x3f, 0x03])?;
+        self.command(0x06)?;
+        self.data(&[0x17, 0x17, 0x17])?;
+        self.command(0x61)?;
+        self.data(&[0x98, 0x01, 0x28])?;
+        self.command(0x30)?;
+        self.data(&[0x1b])?;
+        self.command(0x60)?;
+        self.data(&[0x22])?;
+        self.command(0x82)?;
+        self.data(&[0x00])?;
+        self.command(0x03)?;
+        self.data(&[0x10])?;
+        self.command(0x50)?;
+        self.data(&[0x97])?;
+        self.command(0x04)?;
         FreeRtos::delay_ms(100);
         self.wait_idle(5_000)?;
-        self.command(0x20);
-        self.data(luts::lut_20());
-        self.command(0x21);
-        self.data(luts::lut_21());
-        self.command(0x22);
-        self.data(luts::lut_22());
-        self.command(0x23);
-        self.data(luts::lut_23());
-        self.command(0x24);
-        self.data(luts::lut_24());
+        self.command(0x20)?;
+        self.data(luts::lut_20())?;
+        self.command(0x21)?;
+        self.data(luts::lut_21())?;
+        self.command(0x22)?;
+        self.data(luts::lut_22())?;
+        self.command(0x23)?;
+        self.data(luts::lut_23())?;
+        self.command(0x24)?;
+        self.data(luts::lut_24())?;
         self.sleeping = false;
         Ok(())
     }
@@ -243,15 +245,15 @@ impl<'d> Epd<'d> {
     pub fn display(&mut self, frame: &Frame) -> Result<(), &'static str> {
         self.power_on()?;
         let old = [0u8; 256];
-        self.command(0x10); // old image
+        self.command(0x10)?; // old image
         for chunk in frame.as_bytes().chunks(old.len()) {
-            self.data(&old[..chunk.len()]);
+            self.data(&old[..chunk.len()])?;
         }
-        self.command(0x13);
+        self.command(0x13)?;
         for chunk in frame.as_bytes().chunks(256) {
-            self.data(chunk);
+            self.data(chunk)?;
         }
-        self.command(0x12);
+        self.command(0x12)?;
         FreeRtos::delay_ms(100);
         self.wait_idle(12_000)?;
         self.sleep()
@@ -264,17 +266,17 @@ impl<'d> Epd<'d> {
     pub fn display_status_strip(&mut self, frame: &Frame) -> Result<(), &'static str> {
         let result = (|| {
             self.power_on()?;
-            self.command(0x91); // PTIN
-            self.command(0x90); // PTL
-            self.data(&super::status_window::COMMAND);
-            self.command(0x10);
-            self.data(&[0; super::status_window::BYTES]);
-            self.command(0x13);
-            self.data(super::status_window::plane(frame));
-            self.command(0x12);
+            self.command(0x91)?; // PTIN
+            self.command(0x90)?; // PTL
+            self.data(&super::status_window::COMMAND)?;
+            self.command(0x10)?;
+            self.data(&[0; super::status_window::BYTES])?;
+            self.command(0x13)?;
+            self.data(super::status_window::plane(frame))?;
+            self.command(0x12)?;
             FreeRtos::delay_ms(100);
             self.wait_idle(12_000)?;
-            self.command(0x92); // PTOUT
+            self.command(0x92)?; // PTOUT
             self.sleep()
         })();
         if result.is_err() {
@@ -292,11 +294,11 @@ impl<'d> Epd<'d> {
         if self.sleeping {
             return Ok(());
         }
-        self.command(0x02);
-        self.data(&[0x00]);
+        self.command(0x02)?;
+        self.data(&[0x00])?;
         self.wait_idle(5_000)?;
-        self.command(0x07);
-        self.data(&[0xa5]);
+        self.command(0x07)?;
+        self.data(&[0xa5])?;
         FreeRtos::delay_ms(100);
         self.power.set_low().map_err(|_| "EPD power pin error")?;
         self.sleeping = true;
