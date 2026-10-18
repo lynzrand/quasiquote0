@@ -45,6 +45,13 @@ impl<'d> WifiStation<'d> {
     pub fn start(&mut self) -> Result<(), EspError> {
         self.inner.start()
     }
+
+    /// Park the station between pull attempts. The driver and NVS state
+    /// survive; the radio does not draw power while idle.
+    pub fn stop(&mut self) -> Result<(), EspError> {
+        self.inner.stop()
+    }
+
     pub fn connect(&mut self) -> Result<(), EspError> {
         self.inner.connect()
     }

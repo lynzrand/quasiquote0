@@ -4,9 +4,11 @@ Flashable, cloud-free frame-client firmware for the MindReset Quote/0 board
 (ESP32-C3 driving a UC8251D e-paper panel).
 
 The protocol and durability contract are documented in
-[`docs/PROPOSAL.md`](docs/PROPOSAL.md). The firmware owns Wi-Fi pulling,
-LittleFS persistence, panel refreshes, USB configuration, and streamed OTA;
-servers supply only canonical 296x152 monochrome frames.
+[`docs/PROPOSAL.md`](docs/PROPOSAL.md), and the wire, Wi-Fi, and Bluetooth
+protocol reference is [`docs/PROTOCOL.md`](docs/PROTOCOL.md). The firmware
+owns Wi-Fi pulling, LittleFS persistence, panel refreshes, USB
+configuration, and streamed OTA; servers supply only canonical 296x152
+monochrome frames.
 
 ## Status
 
@@ -17,10 +19,22 @@ Verified on hardware:
 - Panel refresh including the device-drawn status bar; frames persist in
   LittleFS and are redrawn automatically after reboot or power loss
 - USB-visible recovery mode for damaged filesystem state
+- Battery management: VBUS-gated wake, deep-sleep timer cycling with one
+  conditional pull per wake, critical-battery protection
+- BLE BTHome v2 beacon (battery/link telemetry) while awake
 
 Implemented, not yet exercised against real infrastructure: scheduled HTTP
-pulling and streamed USB OTA. The Bluetooth module is payload encoding only;
-the current firmware does not start the radio's NimBLE stack.
+pulling and streamed USB OTA. A connectable GATT push channel is specified
+in [`docs/PROTOCOL.md`](docs/PROTOCOL.md) but not implemented yet.
+
+### NFC
+
+The product's tap-to-open feature is a passive NFC tag inside the case,
+factory-programmed with the device's deep link. It has no electrical
+connection to the ESP32-C3 — stock firmware reverse engineering and an
+I2C sweep of every usable GPIO pair found no NFC or I2C device — so the
+firmware cannot read or write it. Details and options live in
+[`docs/PROTOCOL.md`](docs/PROTOCOL.md#4-nfc-hardware-finding-closed).
 
 ## Requirements
 

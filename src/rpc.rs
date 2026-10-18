@@ -17,6 +17,12 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 static FRAME_UPLOAD_RUNNING: AtomicBool = AtomicBool::new(false);
 static OTA_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Whether a binary transfer owns device state right now. The battery
+/// scheduler refuses to deep-sleep through an active upload.
+pub fn uploads_active() -> bool {
+    FRAME_UPLOAD_RUNNING.load(Ordering::SeqCst) || OTA_RUNNING.load(Ordering::SeqCst)
+}
 pub static PULL_REQUESTED: AtomicBool = AtomicBool::new(false);
 static NEXT_OPERATION_ID: AtomicU32 = AtomicU32::new(1);
 static OPERATIONS: OnceLock<Mutex<VecDeque<OperationStatus>>> = OnceLock::new();
@@ -182,6 +188,7 @@ impl DeviceRpc {
             "operation.status" => self.operation_status(params),
             "frame.metadata" | "frame.getMetadata" => value(self.frame_metadata()),
             "diagnostics.get" => value(self.diagnostics()?),
+            "i2c.scan" => self.i2c_scan(params),
             _ => Err(Error::method_not_found()),
         }
     }
@@ -320,6 +327,20 @@ impl DeviceRpc {
             .cloned()
             .ok_or_else(|| Error::invalid_params("unknown operation"))?;
         value(operation)
+    }
+
+    /// Probe one SDA/SCL pair for acknowledging I2C devices. Bring-up only:
+    /// results are advisory and the bus is torn down again immediately.
+    fn i2c_scan(&self, params: &Value) -> Result<Value, Error> {
+        let params: I2cScanParams = serde_json::from_value(params.clone())
+            .map_err(|error| Error::invalid_params(error.to_string()))?;
+        let devices = crate::i2c_probe::scan(params.sda, params.scl)
+            .map_err(device_error)?;
+        value(I2cScanResult {
+            sda: params.sda,
+            scl: params.scl,
+            devices,
+        })
     }
 
     fn frame_begin(&self, params: &Value) -> Result<Value, Error> {
@@ -568,6 +589,20 @@ struct OtaBeginParams {
 #[serde(deny_unknown_fields)]
 struct OperationStatusParams {
     operation: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct I2cScanParams {
+    sda: i32,
+    scl: i32,
+}
+
+#[derive(Serialize)]
+struct I2cScanResult {
+    sda: i32,
+    scl: i32,
+    devices: Vec<u8>,
 }
 
 #[derive(Deserialize)]
