@@ -152,7 +152,17 @@ impl Config {
         Ok(())
     }
 
-    /// Return a configuration that is safe to expose over JSON-RPC.
+    /// Keep redacted credentials when a management client edits other fields.
+    pub fn preserve_secrets(&mut self, previous: &Self) {
+        if self.wifi.password == "***" {
+            self.wifi.password = previous.wifi.password.clone();
+        }
+        if self.pull.bearer_token == "***" {
+            self.pull.bearer_token = previous.pull.bearer_token.clone();
+        }
+    }
+
+    /// Return a configuration that is safe to expose over management APIs.
     pub fn redacted(&self) -> Self {
         let mut output = self.clone();
         output.wifi.password = redact(&output.wifi.password);

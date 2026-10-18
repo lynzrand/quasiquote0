@@ -1,7 +1,11 @@
+#[path = "../../../src/activity.rs"]
+pub mod activity;
 #[path = "../../../src/clock_face.rs"]
 pub mod clock_face;
 #[path = "../../../src/config.rs"]
 pub mod config;
+#[path = "../../../src/device.rs"]
+pub mod device;
 pub mod display;
 #[path = "../../../src/embedded_graphics.rs"]
 pub mod embedded_graphics;
@@ -17,3 +21,5 @@ pub mod refresh_policy;
 pub mod status_bar;
 #[path = "../../../src/status_icons.rs"]
 pub mod status_icons;
+#[path = "../../../src/store.rs"]
+pub mod store;

@@ -4,6 +4,7 @@
 //! policy loop. A future firmware crate should construct these drivers from
 //! `esp_idf_hal::peripherals::Peripherals` and own its scheduling itself.
 
+pub mod activity;
 pub mod battery;
 pub mod bluetooth;
 pub mod clock_face;

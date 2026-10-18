@@ -8,10 +8,11 @@
 use crate::config::Config;
 use crate::frame::{digest_hex, Frame, Sha256Digest, FRAME_BYTES};
 use core::fmt;
-use esp_idf_svc::fs::littlefs::Littlefs;
-use esp_idf_svc::io::vfs::MountedLittlefs;
+#[cfg(target_os = "espidf")]
+use esp_idf_svc::{fs::littlefs::Littlefs, io::vfs::MountedLittlefs};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "espidf")]
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -21,6 +22,7 @@ pub const MOUNT_PATH: &str = "/littlefs";
 pub const PARTITION_LABEL: &str = "littlefs";
 
 const CONFIG_PATH: &str = "config/device.v1.json";
+const ADMIN_PATH: &str = "config/admin.v1.json";
 const STATE_PATH: &str = "state/device.v1.json";
 const FRAME_DIRECTORY: &str = "frames";
 
@@ -45,7 +47,7 @@ pub struct PullValidators {
     pub last_error: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct DeviceState {
     #[serde(default = "state_schema")]
     pub schema: u32,
@@ -58,6 +60,21 @@ pub struct DeviceState {
     pub pull: PullValidators,
     pub firmware_version: Option<String>,
     pub ota_pending: Option<String>,
+}
+
+impl Default for DeviceState {
+    fn default() -> Self {
+        Self {
+            schema: state_schema(),
+            desired: None,
+            displayed_content_sha256: None,
+            displayed_composed_sha256: None,
+            displayed_status_bar: None,
+            pull: PullValidators::default(),
+            firmware_version: None,
+            ota_pending: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -85,6 +102,7 @@ impl From<serde_json::Error> for StoreError {
 
 /// Keep the mounted VFS alive for the lifetime of all `std::fs` operations.
 pub struct Store {
+    #[cfg(target_os = "espidf")]
     _mount: MountedLittlefs<Littlefs<()>>,
     root: PathBuf,
 }
@@ -110,6 +128,7 @@ pub struct FrameWriter {
 }
 
 impl Store {
+    #[cfg(target_os = "espidf")]
     pub fn mount() -> Result<Self, StoreError> {
         let blank = partition_is_erased()?;
         let mut filesystem =
@@ -125,6 +144,22 @@ impl Store {
         store.ensure_layout()?;
         store.remove_abandoned_temporary_files()?;
         Ok(store)
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    pub fn open_at(root: PathBuf) -> Result<Self, StoreError> {
+        let store = Self { root };
+        store.ensure_layout()?;
+        store.remove_abandoned_temporary_files()?;
+        Ok(store)
+    }
+
+    pub fn admin_token(&self) -> Result<Option<String>, StoreError> {
+        self.read_json_optional(ADMIN_PATH)
+    }
+
+    pub fn save_admin_token(&self, token: &str) -> Result<(), StoreError> {
+        self.write_json_atomic(ADMIN_PATH, &token)
     }
 
     pub fn load_config(&self) -> Result<Option<Config>, StoreError> {
@@ -166,6 +201,7 @@ impl Store {
     /// application slots are deliberately left alone.
     pub fn factory_reset(&self) -> Result<(), StoreError> {
         self.clear_config()?;
+        self.remove_optional(ADMIN_PATH)?;
         self.remove_optional(STATE_PATH)?;
         for entry in fs::read_dir(self.path(FRAME_DIRECTORY))? {
             let entry = entry?;
@@ -179,12 +215,7 @@ impl Store {
     pub fn load_state(&self) -> Result<DeviceState, StoreError> {
         let state: DeviceState = match self.read_json_optional(STATE_PATH)? {
             Some(state) => state,
-            // A derived `Default` would carry `schema: 0` and strand every
-            // freshly formatted volume in recovery mode.
-            None => DeviceState {
-                schema: state_schema(),
-                ..DeviceState::default()
-            },
+            None => DeviceState::default(),
         };
         if state.schema != state_schema() {
             return Err(StoreError("unsupported device-state schema".to_owned()));
@@ -282,11 +313,15 @@ impl Store {
         }
         let mut bytes = Vec::new();
         File::open(path)?.read_to_end(&mut bytes)?;
-        Frame::from_bytes(&bytes)
-            .map(Some)
-            .map_err(|_| StoreError("stored frame has invalid length".to_owned()))
+        let frame = Frame::from_bytes(&bytes)
+            .map_err(|_| StoreError("stored frame has invalid length".to_owned()))?;
+        if frame.sha256() != *digest {
+            return Err(StoreError("stored frame digest does not match".to_owned()));
+        }
+        Ok(Some(frame))
     }
 
+    #[cfg(target_os = "espidf")]
     pub fn info(&self) -> Result<(usize, usize), StoreError> {
         self._mount
             .info()
@@ -468,6 +503,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
     Ok(())
 }
 
+#[cfg(target_os = "espidf")]
 fn partition_is_erased() -> Result<bool, StoreError> {
     let label = CString::new(PARTITION_LABEL).expect("partition labels cannot contain NUL");
     let partition = unsafe {
@@ -488,6 +524,7 @@ fn partition_is_erased() -> Result<bool, StoreError> {
     Ok(probe.iter().all(|byte| *byte == 0xff))
 }
 
+#[cfg(target_os = "espidf")]
 fn esp_error(error: esp_idf_sys::EspError) -> StoreError {
     StoreError(error.to_string())
 }

@@ -42,8 +42,17 @@ impl From<StoreError> for DeviceError {
 }
 
 impl Device {
+    #[cfg(target_os = "espidf")]
     pub fn mount() -> Result<Self, DeviceError> {
-        let store = Store::mount()?;
+        Self::from_store(Store::mount()?)
+    }
+
+    #[cfg(not(target_os = "espidf"))]
+    pub fn open_at(root: std::path::PathBuf) -> Result<Self, DeviceError> {
+        Self::from_store(Store::open_at(root)?)
+    }
+
+    fn from_store(store: Store) -> Result<Self, DeviceError> {
         let config = store.load_config_or_quarantine()?.unwrap_or_default();
         let state = store.load_state()?;
         store.remove_unreferenced_frames(&state)?;
@@ -78,8 +87,16 @@ impl Device {
         self.last_pull_error.as_deref()
     }
 
+    #[cfg(target_os = "espidf")]
     pub fn filesystem_info(&self) -> Result<(usize, usize), DeviceError> {
         self.store.info().map_err(Into::into)
+    }
+
+    pub fn admin_token(&self) -> Result<Option<String>, DeviceError> {
+        self.store.admin_token().map_err(Into::into)
+    }
+    pub fn save_admin_token(&self, token: &str) -> Result<(), DeviceError> {
+        self.store.save_admin_token(token).map_err(Into::into)
     }
 
     pub fn replace_config(&mut self, config: Config) -> Result<(), DeviceError> {
@@ -115,11 +132,13 @@ impl Device {
         meta: FrameMeta,
     ) -> Result<Sha256Digest, DeviceError> {
         let digest = self.store.save_frame(frame)?;
-        self.state.desired = Some(DesiredFrame {
+        let mut next = self.state.clone();
+        next.desired = Some(DesiredFrame {
             sha256: digest_hex(&digest),
             meta,
         });
-        self.store.save_state(&self.state)?;
+        self.store.save_state(&next)?;
+        self.state = next;
         self.store.remove_unreferenced_frames(&self.state)?;
         Ok(digest)
     }
@@ -141,11 +160,13 @@ impl Device {
         digest: Sha256Digest,
         meta: FrameMeta,
     ) -> Result<(), DeviceError> {
-        self.state.desired = Some(DesiredFrame {
+        let mut next = self.state.clone();
+        next.desired = Some(DesiredFrame {
             sha256: digest_hex(&digest),
             meta,
         });
-        self.store.save_state(&self.state)?;
+        self.store.save_state(&next)?;
+        self.state = next;
         self.store.remove_unreferenced_frames(&self.state)?;
         Ok(())
     }
@@ -158,16 +179,18 @@ impl Device {
         last_modified: Option<String>,
         now_ms: u64,
     ) -> Result<(), DeviceError> {
-        self.state.desired = Some(DesiredFrame {
+        let mut next = self.state.clone();
+        next.desired = Some(DesiredFrame {
             sha256: digest_hex(&digest),
             meta,
         });
-        self.state.pull.etag = etag;
-        self.state.pull.last_modified = last_modified;
-        self.state.pull.last_success_ms = Some(now_ms);
-        self.state.pull.last_error = None;
+        next.pull.etag = etag;
+        next.pull.last_modified = last_modified;
+        next.pull.last_success_ms = Some(now_ms);
+        next.pull.last_error = None;
+        self.store.save_state(&next)?;
+        self.state = next;
         self.last_pull_error = None;
-        self.store.save_state(&self.state)?;
         self.store.remove_unreferenced_frames(&self.state)?;
         Ok(())
     }
@@ -241,6 +264,7 @@ impl Device {
         Ok(())
     }
 
+    #[cfg(target_os = "espidf")]
     pub fn confirm_ota(&mut self) -> Result<(), DeviceError> {
         if self.state.ota_pending.is_some() {
             crate::ota::confirm_running_image().map_err(DeviceError)?;
