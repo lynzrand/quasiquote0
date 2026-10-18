@@ -149,6 +149,24 @@ and `ota_1` (1.875 MiB each), then a 192 KiB LittleFS volume labelled
 `partitions.csv` is copied into ESP-IDF's generated project through the Cargo
 environment configuration.
 
+## Editing the web UI
+
+Readable HTML, CSS, and JavaScript live in `src/web/`. A small
+[esbuild](https://esbuild.github.io/) build inlines and minifies them into
+`src/web/embedded.html`, the only page embedded by Rust:
+
+```console
+pnpm install --frozen-lockfile
+pnpm build
+pnpm test
+cargo build --locked --bin quasiquote0 --features experimental-partial
+```
+
+The generated page is committed so firmware-only builds remain usable offline
+without Node. After editing web sources, run `pnpm build`; `pnpm test` checks
+that the committed asset matches the sources. No runtime package or CDN is
+needed on the device or in the browser.
+
 ## Verification
 
 Host checks exercise clock/refresh/power policies, the bounded USB parser,

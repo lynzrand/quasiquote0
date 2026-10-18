@@ -45,7 +45,7 @@ pub fn start(app: Arc<App>) -> Result<EspHttpServer<'static>, EspIOError> {
         ];
         request
             .into_response(200, Some("OK"), &headers)?
-            .write_all(include_bytes!("web/index.html"))
+            .write_all(include_bytes!("web/embedded.html"))
     })?;
     for (path, method, action) in [
         ("/api/status", Method::Get, Action::Status),

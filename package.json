@@ -1,0 +1,13 @@
+{
+  "name": "quasiquote0-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node tools/build_web.mjs",
+    "check:assets": "node tools/build_web.mjs --check",
+    "test": "node tests/web_sha256.cjs && node tools/build_web.mjs --check"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
