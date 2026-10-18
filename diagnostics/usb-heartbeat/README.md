@@ -46,3 +46,20 @@ The log records COM-port appearance/disappearance and retains JTAG failures
 before a successful halt, including cases where COM is present but the JTAG
 adapter cannot be opened. The most recent such transcript is also saved as
 `last-interesting-attempt.log` in the Windows staging directory.
+
+If COM4 appears but JTAG reports `LIBUSB_ERROR_NOT_FOUND`, inspect the JTAG
+driver binding. A generic WinUSB driver can omit `DeviceInterfaceGUIDs`;
+Espressif's JTAG-specific package registers it for `VID_303A&PID_1001&MI_02`.
+The official package is available from
+[Espressif's driver releases](https://github.com/espressif/esp-win-usb-drivers/releases/tag/ESP32-USB-JTAG_v6.1.7600.16386).
+After extraction, validate or install it using:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/install_windows_jtag_driver.ps1 -DriverDirectory target/windows-jtag-driver -ValidateOnly
+# Run the installation from an administrator PowerShell:
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/install_windows_jtag_driver.ps1 -DriverDirectory target/windows-jtag-driver
+```
+
+The installer checks the expected hardware ID, interface GUID, and Espressif
+catalog signature before invoking Windows PnPUtil. Its package matches only
+the JTAG interface, leaving the USB serial interface outside its scope.
