@@ -58,7 +58,7 @@ impl Bluetooth {
             let mut params: esp_idf_sys::ble_gap_adv_params = core::mem::zeroed();
             params.conn_mode = esp_idf_sys::BLE_GAP_CONN_MODE_NON as u8;
             params.disc_mode = esp_idf_sys::BLE_GAP_DISC_MODE_GEN as u8;
-            esp_idf_sys::ble_gap_adv_start(
+            let result = esp_idf_sys::ble_gap_adv_start(
                 esp_idf_sys::BLE_OWN_ADDR_PUBLIC as u8,
                 core::ptr::null(),
                 ADVERTISEMENT_DURATION_MS,
@@ -66,26 +66,23 @@ impl Bluetooth {
                 Some(gap_event),
                 core::ptr::null_mut(),
             );
-            store_last_payload(&payload);
+            if result == 0 {
+                store_last_payload(&payload);
+            }
         }
     }
 }
 
 fn last_payload() -> [u8; BTHOME_PAYLOAD_LEN] {
-    LAST_PAYLOAD
-        .get()
-        .map(|cell| *cell.lock().unwrap())
-        .unwrap_or([0; BTHOME_PAYLOAD_LEN])
+    *LAST_PAYLOAD.lock().unwrap()
 }
 
 fn store_last_payload(payload: &[u8; BTHOME_PAYLOAD_LEN]) {
-    if let Some(cell) = LAST_PAYLOAD.get() {
-        *cell.lock().unwrap() = *payload;
-    }
+    *LAST_PAYLOAD.lock().unwrap() = *payload;
 }
 
-static LAST_PAYLOAD: std::sync::OnceLock<std::sync::Mutex<[u8; BTHOME_PAYLOAD_LEN]>> =
-    std::sync::OnceLock::new();
+static LAST_PAYLOAD: std::sync::Mutex<[u8; BTHOME_PAYLOAD_LEN]> =
+    std::sync::Mutex::new([0; BTHOME_PAYLOAD_LEN]);
 
 extern "C" fn on_sync() {
     HOST_SYNCED.store(true, Ordering::SeqCst);
