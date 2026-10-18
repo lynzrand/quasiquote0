@@ -3,6 +3,7 @@ name = "quasiquote0"
 version = "0.1.0"
 authors = ["Rynco Maekawa <lynzrand@outlook.com>"]
 edition = "2021"
+default-run = "quasiquote0"
 resolver = "2"
 rust-version = "1.82"
 

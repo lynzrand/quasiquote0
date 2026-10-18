@@ -1,4 +1,11 @@
+#[path = "../../../src/clock_face.rs"]
+pub mod clock_face;
 #[path = "../../../src/config.rs"]
 pub mod config;
+pub mod display;
+#[path = "../../../src/embedded_graphics.rs"]
+pub mod embedded_graphics;
+#[path = "../../../src/frame.rs"]
+pub mod frame;
 #[path = "../../../src/power_policy.rs"]
 pub mod power_policy;

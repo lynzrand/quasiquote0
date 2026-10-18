@@ -22,6 +22,14 @@ should treat that region as reserved.
 
 ## 1. USB wire protocol (implemented)
 
+The standalone `quote0-clock` bring-up binary uses the same Yamux stream-0
+JSON-RPC framing and exposes `system.ping`, `device.hello`, `device.status`,
+`device.reboot`, `clock.get`, and `clock.set`. `clock.set` accepts
+`{"unix_seconds":1792326341}` (UTC, between 2020 and 2100). The face uses a
+fixed UTC+8 offset. `clock.get` reports time, acknowledged display time and
+refresh count, VBUS/host presence, wake-source setup, and uptime. Frame-client
+methods below belong to the `quasiquote0` binary, rather than the clock binary.
+
 USB Serial/JTAG (GPIO18/19) carries exactly one **Yamux** session
 (version 0 framing). No log text ever appears on this wire; the
 bootloader and application consoles are disabled.

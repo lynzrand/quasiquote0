@@ -10,6 +10,50 @@ owns Wi-Fi pulling, LittleFS persistence, panel refreshes, USB
 configuration, and streamed OTA; servers supply only canonical 296x152
 monochrome frames.
 
+## Clock bring-up firmware
+
+`quote0-clock` is the current standalone clock application. It replaces the
+displayed image with a large landscape `HH:MM` clock in Hong Kong time
+(UTC+8), refreshing only when the minute changes. This binary starts USB
+control before the panel and does not start Wi-Fi, BLE, or the filesystem.
+Saved frame-client configuration and frames remain available for later use.
+
+Build it with `cargo build --locked --bin quote0-clock`. Convert the ELF for
+the recovered 4 MiB/DIO/40 MHz setup:
+
+```console
+mkdir -p target/clock-flash
+.embuild/espressif/python_env/idf5.5_py3.14_env/bin/python -m esptool \
+  --chip esp32c3 elf2image --flash_mode dio --flash_freq 40m --flash_size 4MB \
+  --elf-sha256-offset 0xb0 -o target/clock-flash/quote0-clock.bin \
+  target/riscv32imc-esp-espidf/debug/quote0-clock
+```
+
+With the recovered bootloader and partition layout already installed, run
+`tools/flash_clock_windows.ps1` in Windows PowerShell. It flashes and verifies
+only `ota_0`, synchronizes UTC from the Windows clock, and checks the display.
+The Windows tools can read the build over `\\wsl.localhost\Arch\...`; USB
+forwarding into WSL is unnecessary.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/clock_usb.ps1 -SyncTime
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/clock_usb.ps1
+```
+
+RTC time survives deep sleep. A complete loss of power requires another USB
+time synchronization; until then the face shows `--:--`. On battery, normal
+sleep ends at the next minute boundary or USB insertion. A critically low
+cell uses the longer protective sleep interval. USB always keeps the CPU awake.
+
+Host tests for clock boundaries, framebuffer projection, configuration, and
+power policy can run independently of ESP-IDF:
+
+```console
+cd /tmp
+cargo +stable test --manifest-path /path/to/quasiquote0/tests/host/Cargo.toml \
+  --target x86_64-unknown-linux-gnu --target-dir /path/to/quasiquote0/target/host-tests
+```
+
 ## Status
 
 Verified on hardware:
