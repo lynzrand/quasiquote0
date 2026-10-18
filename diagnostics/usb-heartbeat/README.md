@@ -38,3 +38,7 @@ its SHA-256 verified against that manifest. The watcher stages the debugger
 and firmware in Windows temporary storage, repeatedly attempts JTAG attach
 and CPU halt, then programs and verifies only the four regions listed in
 the generated `flasher_args.json`. It checks three USB heartbeats after reset.
+Retries have no deliberate delay by default; process startup and USB probing
+determine the actual rate, which is reported in the log. Use
+`-RetryDelayMilliseconds <milliseconds>` to throttle retries, or
+`-ReportIntervalSeconds 10` for more frequent progress reports.

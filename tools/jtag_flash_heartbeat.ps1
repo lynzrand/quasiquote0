@@ -3,6 +3,8 @@
 param(
     [string]$Port = 'COM4',
     [ValidateRange(1, 604800)][int]$TimeoutSeconds = 86400,
+    [ValidateRange(0, 1000)][int]$RetryDelayMilliseconds = 0,
+    [ValidateRange(1, 3600)][int]$ReportIntervalSeconds = 60,
     [string]$LogPath = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -49,20 +51,23 @@ shutdown
 
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $attempts = 0
-$lastReport = -60.0
-Write-Log "ARMED: continuously trying JTAG init/halt, then flash; staged in $stage."
+$lastReport = 0.0
+$lastReportAttempts = 0
+$startInfo = [Diagnostics.ProcessStartInfo]::new()
+$startInfo.FileName = $openocd
+$startInfo.Arguments = '-s "' + $scripts + '" -f "' + $config + '"'
+$startInfo.UseShellExecute = $false
+$startInfo.CreateNoWindow = $true
+$startInfo.RedirectStandardError = $true
+$startInfo.RedirectStandardOutput = $true
+Write-Log "ARMED: continuously trying JTAG init/halt, then flash; retry delay ${RetryDelayMilliseconds}ms; staged in $stage."
 while ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
     $attempts++
     # init cannot be retried safely in the same OpenOCD process after a
     # missing adapter, so create a fresh process for each attempt.
-    $process = New-Object Diagnostics.Process
-    $process.StartInfo.FileName = $openocd
-    $process.StartInfo.Arguments = '-s "' + $scripts + '" -f "' + $config + '"'
-    $process.StartInfo.UseShellExecute = $false
-    $process.StartInfo.CreateNoWindow = $true
-    $process.StartInfo.RedirectStandardError = $true
-    $process.StartInfo.RedirectStandardOutput = $true
-    $output = New-Object 'System.Collections.Generic.List[string]'
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $output = [System.Collections.Generic.List[string]]::new()
     try {
         $null = $process.Start()
         $stdout = $process.StandardOutput.ReadToEndAsync()
@@ -120,12 +125,18 @@ while ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
         Write-Log 'Flash verified, but USB heartbeat was not confirmed.'
         exit 2
     }
-    if ($clock.Elapsed.TotalSeconds - $lastReport -ge 60) {
-        Write-Log "Waiting for JTAG ($attempts connection attempts). Last exit: $result"
+    $now = $clock.Elapsed.TotalSeconds
+    if ($now - $lastReport -ge $ReportIntervalSeconds) {
+        $rate = ($attempts - $lastReportAttempts) / ($now - $lastReport)
+        Write-Log ("Waiting for JTAG ({0} attempts; {1:F1}/second over {2:F1}s). Last exit: {3}" -f
+            $attempts, $rate, ($now - $lastReport), $result)
         Set-Content -LiteralPath (Join-Path $stage 'last-attempt.log') -Value $transcript -Encoding UTF8
-        $lastReport = $clock.Elapsed.TotalSeconds
+        $lastReport = $now
+        $lastReportAttempts = $attempts
     }
-    Start-Sleep -Milliseconds 25
+    if ($RetryDelayMilliseconds -gt 0) {
+        Start-Sleep -Milliseconds $RetryDelayMilliseconds
+    }
 }
 Write-Log 'Timed out waiting for JTAG.'
 exit 1
