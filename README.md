@@ -105,6 +105,23 @@ python3 tools/quasiquote0_usb.py --port /dev/ttyACM0 operation-status 1
 
 `frame.bin` is exactly 5,624 bytes in the documented native landscape format.
 
+### Catching a sleeping device on Windows
+
+If the device sleeps before you can open its USB port, run the Windows watcher:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/wake_keep_awake.ps1 -Port COM4
+```
+
+It retries every 50 ms for up to 24 hours, immediately sends a minimal
+configuration with `power.stay_awake_on_usb: true`, then verifies the saved
+setting and checks that the device still responds with USB power detected.
+**This replaces the existing configuration and resets Wi-Fi and pull settings.**
+It uses Windows' built-in serial API and needs no Python or WSL USB forwarding.
+Use `-LogPath <file>` to save progress, `-TimeoutSeconds <seconds>` to change
+the watch duration, or `-SelfTest` to check the protocol without opening USB.
+The script exits after success; press Ctrl+C to stop a foreground watcher.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
