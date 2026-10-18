@@ -8,6 +8,12 @@ Firmware project: `quasiquote0`
 
 ## Current design checkpoint
 
+An [ablation review on 2026-10-18](ABLATION.md) records the agreed next design:
+keep Wi-Fi connected and serve a browser UI on USB power, use a setup hotspot
+when unconfigured, retain a small USB bootstrap path and BLE capability, and
+synchronize time through NTP. This is a planned replacement for the USB-only
+management contract below; the current firmware has not migrated yet.
+
 The main application remains a remote framebuffer. The separate `quote0-clock`
 binary is a bring-up diagnostic, not a change to the server-rendered content
 contract. Its visible clock, minute rollover, suppression of redundant
