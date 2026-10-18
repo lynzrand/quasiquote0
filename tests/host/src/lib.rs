@@ -1,5 +1,7 @@
 #[path = "../../../src/activity.rs"]
 pub mod activity;
+#[path = "../../../src/bootstrap_line.rs"]
+pub mod bootstrap_line;
 #[path = "../../../src/clock_face.rs"]
 pub mod clock_face;
 #[path = "../../../src/config.rs"]
@@ -11,6 +13,8 @@ pub mod display;
 pub mod embedded_graphics;
 #[path = "../../../src/frame.rs"]
 pub mod frame;
+#[path = "../../../src/network_policy.rs"]
+pub mod network_policy;
 #[path = "../../../src/power_policy.rs"]
 pub mod power_policy;
 #[path = "../../../src/pull_schedule.rs"]

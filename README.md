@@ -3,100 +3,70 @@
 Flashable, cloud-free frame-client firmware for the MindReset Quote/0 board
 (ESP32-C3 driving a UC8251D e-paper panel).
 
-The protocol and durability contract are documented in
-[`docs/PROPOSAL.md`](docs/PROPOSAL.md), and the wire, Wi-Fi, and Bluetooth
-protocol reference is [`docs/PROTOCOL.md`](docs/PROTOCOL.md). The firmware
+The current management, frame, and durability contracts are documented in
+[`docs/PROTOCOL.md`](docs/PROTOCOL.md); the original design background is in
+[`docs/PROPOSAL.md`](docs/PROPOSAL.md). The firmware
 owns Wi-Fi pulling, LittleFS persistence, panel refreshes, USB
 configuration, and streamed OTA; servers supply only canonical 296x152
 monochrome frames.
 
-## Clock bring-up firmware
+## Browser management
 
-`quote0-clock` is the current standalone clock application. It replaces the
-displayed image with a large landscape `HH:MM` clock in Hong Kong time
-(UTC+8), refreshing only when the minute changes. This binary starts USB
-control before the panel and does not start Wi-Fi, BLE, or the filesystem.
-Saved frame-client configuration and frames remain available for later use.
+With USB connected, Quote/0 stays awake, joins its saved Wi-Fi network, and
+serves a small browser UI. An unconfigured device starts a password-protected
+setup hotspot. BLE BTHome telemetry remains enabled. On battery, the web UI
+and hotspot stop; Wi-Fi runs only for due content pulls.
 
-Build it with `cargo build --locked --bin quote0-clock`. Convert the ELF for
-the recovered 4 MiB/DIO/40 MHz setup:
-
-```console
-mkdir -p target/clock-flash
-.embuild/espressif/python_env/idf5.5_py3.14_env/bin/python -m esptool \
-  --chip esp32c3 elf2image --flash_mode dio --flash_freq 40m --flash_size 4MB \
-  --elf-sha256-offset 0xb0 -o target/clock-flash/quote0-clock.bin \
-  target/riscv32imc-esp-espidf/debug/quote0-clock
-```
-
-With the recovered bootloader and partition layout already installed, run
-`tools/flash_clock_windows.ps1` in Windows PowerShell. It flashes and verifies
-only `ota_0`, synchronizes UTC from the Windows clock, and checks the display.
-The Windows tools can read the build over `\\wsl.localhost\Arch\...`; USB
-forwarding into WSL is unnecessary.
+On Windows, use the native USB setup tool; WSL USB forwarding is unnecessary:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/clock_usb.ps1 -SyncTime
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/clock_usb.ps1
+# Read status and the current browser address.
+.\tools\setup_usb.ps1
+# Copy one saved Wi-Fi profile locally, wait for an address, and open the UI.
+.\tools\setup_usb.ps1 -WifiProfile "My Wi-Fi" -WaitForNetworkSeconds 30 -OpenBrowser
+# Show the device access code and hotspot password, or clear Wi-Fi for setup.
+.\tools\setup_usb.ps1 -ShowAccess
+.\tools\setup_usb.ps1 -ClearWifi
 ```
 
-RTC time survives deep sleep. A complete loss of power requires another USB
-time synchronization; until then the face shows `--:--`. On battery, normal
-sleep ends at the next minute boundary or USB insertion. A critically low
-cell uses the longer protective sleep interval. USB always keeps the CPU awake.
+The selected Windows Wi-Fi key is never printed or copied into the repository;
+the temporary profile export is deleted after use. Browser API calls require
+the persistent device access code. The USB launcher passes it locally in a URL
+fragment. The page supports Wi-Fi/pull settings, status, frame upload, and
+streamed dual-slot firmware updates. Use the local HTTP UI on a trusted network.
 
-Host tests for clock boundaries, framebuffer projection, configuration, and
-power policy can run independently of ESP-IDF:
+Linux/macOS use `tools/quote0_setup.py` with Python and `pyserial`:
 
 ```console
-cd /tmp
-cargo +stable test --manifest-path /path/to/quasiquote0/tests/host/Cargo.toml \
-  --target x86_64-unknown-linux-gnu --target-dir /path/to/quasiquote0/target/host-tests
+python3 tools/quote0_setup.py --port /dev/ttyACM0 status
+python3 tools/quote0_setup.py --port /dev/ttyACM0 --wait 30 --open-browser wifi "My Wi-Fi"
 ```
 
-## Status
-
-Verified on hardware:
-
-- Yamux control session over USB Serial/JTAG with newline-delimited JSON-RPC
-- Streamed, digest-verified frame uploads with operation progress tracking
-- Panel refresh including the device-drawn status bar; frames persist in
-  LittleFS and are redrawn automatically after reboot or power loss
-- USB-visible recovery mode for damaged filesystem state
-- Battery management: VBUS-gated wake, deep-sleep timer cycling with one
-  minute status heartbeat, independent pull deadlines, critical-battery protection
-- BLE BTHome v2 beacon (battery/link telemetry) while awake
-
-Implemented, not yet exercised against real infrastructure: scheduled HTTP
-pulling and streamed USB OTA. A connectable GATT push channel is specified
-in [`docs/PROTOCOL.md`](docs/PROTOCOL.md) but not implemented yet.
+USB now carries only bounded setup/status messages. The previous Yamux/JSON-RPC
+client and watcher apply to old firmware and the standalone diagnostic; they
+are not the normal application's management interface. See
+[`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the current APIs.
 
 ### Minute status heartbeat
 
-The main `quasiquote0` application updates the complete 16-column status bar
-every minute: battery, Wi-Fi, USB power, Bluetooth advertising, and a small
-UTC+8 clock. Producer content remains unchanged between frame updates. On
-battery, clock-only wakes keep Wi-Fi off; pull deadlines and backoff survive
-deep sleep independently in RTC memory. The current full-panel refresh uses
-more battery than content-only updates. Critical battery suspends the
-heartbeat; `display.status_bar: false` disables minute wakes.
+The complete right-hand status strip updates every minute: battery, Wi-Fi,
+USB power, BLE, and a UTC+8 clock. NTP sets time whenever the station is active;
+RTC time survives deep sleep. Unknown time displays `--:--`. A clock-only
+battery wake does not connect Wi-Fi. Disabling `display.status_bar` disables
+minute wakes. Critical battery suspends the heartbeat. Clock ticks do not write
+LittleFS state.
 
-Synchronize or inspect time over USB with `tools/clock_usb.ps1 -SyncTime` on
-Windows, or `tools/quasiquote0_usb.py --port <port> clock-sync` / `clock-get`.
-Unknown time displays `--:--`; a complete power loss requires synchronization.
-Current display acknowledgment updates in RAM, so clock ticks do not write
-LittleFS state each minute.
+The opt-in `experimental-partial` feature confines unchanged-content updates
+to the status strip after a full baseline in the same boot. This was visually
+verified on USB; it uses the stock waveform with no measured speed gain.
+Battery wakes still use full refresh. See [`docs/PARTIAL_REFRESH.md`](docs/PARTIAL_REFRESH.md).
 
-An opt-in `experimental-partial` feature confines unchanged-content status
-updates to the strip after a full baseline in the same boot. This was visually
-verified on USB; it uses the stock waveform and has no measured speed gain.
-Battery wakes still use full refresh. See
-[`docs/PARTIAL_REFRESH.md`](docs/PARTIAL_REFRESH.md) for the experiment and limits.
+### Standalone clock diagnostic
 
-For the recovered Windows setup, build `--bin quasiquote0`, convert its ELF
-with the same esptool options above, and pass that image to
-`tools/flash_app_windows.ps1 -Image <image.bin>`. This keeps the recovered
-bootloader and partition layout and then synchronizes the clock.
+`cargo build --locked --bin quote0-clock --features legacy-usb` builds the
+original large-clock smoke test without Wi-Fi, BLE, or filesystem access.
+Its USB time tools remain `tools/clock_usb.ps1 -SyncTime` and
+`tools/quasiquote0_usb.py`. See [`docs/LEGACY_USB.md`](docs/LEGACY_USB.md).
 
 ### NFC
 
@@ -118,17 +88,17 @@ firmware cannot read or write it. Details and options live in
 ## Building and flashing
 
 ```console
-cargo build
+cargo build --locked --bin quasiquote0
 espflash flash --port /dev/ttyACM0 \
   --bootloader "$(ls -t target/riscv32imc-esp-espidf/debug/build/esp-idf-sys-*/out/build/bootloader/bootloader.bin | head -1)" \
   --partition-table "$(ls -t target/riscv32imc-esp-espidf/debug/build/esp-idf-sys-*/out/build/partition_table/partition-table.bin | head -1)" \
   target/riscv32imc-esp-espidf/debug/quasiquote0
 ```
 
-When migrating from the stock firmware or anything else, erase first with
-`espflash erase-flash --port /dev/ttyACM0`; the device formats its LittleFS
-volume on first boot. A blank volume boots unconfigured but fully reachable
-over USB.
+For a first stock-firmware migration, back up flash and install the matching
+bootloader and partition table. Erasing flash also destroys retained frames
+and configuration; it is unnecessary for application upgrades. The device
+formats an erased LittleFS volume on first boot and enters USB-accessible setup.
 
 | Module | Scope |
 | --- | --- |
@@ -138,14 +108,25 @@ over USB.
 | `display` | native 152x296, 1bpp UC8251D framebuffer and Quote/0 panel GPIO ownership |
 | `embedded_graphics` | `embedded-graphics` `DrawTarget` over the native framebuffer |
 
-The firmware starts a blocking Yamux session over USB Serial/JTAG before it
-initializes optional radio and panel services. Quote/0's stream-0 extension
-carries newline-delimited JSON-RPC; direct frame and OTA transfers use
-device-selected streams.
-Each blocking stream has a 4 KiB receive queue by default, and the whole
-connection has a 4 KiB outbound queue. Readers, writers, and the USB driver
-task park on condition variables at those bounds, so Yamux's protocol-level
-256 KiB initial credit never implies a 256 KiB allocation on the device.
+The firmware starts the USB bootstrap task before optional radio and panel
+setup. HTTP starts after the network stack is ready. Browser uploads and
+scheduled pulls share one operation lease through verification, durable
+publication, and cleanup. Firmware streams directly to the inactive OTA slot.
+
+For the recovered Windows JTAG setup, convert the ELF with the installed
+esptool, then run `tools/flash_app_windows.ps1 -Image <application.bin>`. It
+preserves the bootloader, partition table, and filesystem and detects the
+currently running slot through USB. If bootstrap is unavailable, specify
+`-Slot ota_0` or `-Slot ota_1` for recovery; this does not change boot selection.
+Use the browser firmware updater for subsequent dual-slot upgrades.
+
+```console
+mkdir -p target/browser-flash
+.embuild/espressif/python_env/idf5.5_py3.14_env/bin/python -m esptool \
+  --chip esp32c3 elf2image --flash_mode dio --flash_freq 40m --flash_size 4MB \
+  --elf-sha256-offset 0xb0 -o target/browser-flash/quasiquote0.bin \
+  target/riscv32imc-esp-espidf/debug/quasiquote0
+```
 
 ## Board invariant
 
@@ -168,37 +149,24 @@ and `ota_1` (1.875 MiB each), then a 192 KiB LittleFS volume labelled
 `partitions.csv` is copied into ESP-IDF's generated project through the Cargo
 environment configuration.
 
-## USB client
+## Verification
 
-`tools/quasiquote0_usb.py` is a small host client for the stream-0 extension.
-It needs `pyserial` and does not use the USB byte stream for logging:
+Host checks exercise clock/refresh/power policies, the bounded USB parser,
+exclusive publication, frame integrity, interrupted writes, and persistence:
 
 ```console
-python3 -m pip install pyserial
-python3 tools/quasiquote0_usb.py --port /dev/ttyACM0 hello
-python3 tools/quasiquote0_usb.py --port /dev/ttyACM0 config-set config.json
-python3 tools/quasiquote0_usb.py --port /dev/ttyACM0 frame-put frame.bin
-python3 tools/quasiquote0_usb.py --port /dev/ttyACM0 operation-status 1
+cd /tmp
+cargo +stable test --manifest-path /path/to/quasiquote0/tests/host/Cargo.toml \
+  --target x86_64-unknown-linux-gnu --target-dir /path/to/quasiquote0/target/host-tests
 ```
 
-`frame.bin` is exactly 5,624 bytes in the documented native landscape format.
-
-### Catching a sleeping device on Windows
-
-If the device sleeps before you can open its USB port, run the Windows watcher:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/wake_keep_awake.ps1 -Port COM4
-```
-
-It retries every 50 ms for up to 24 hours, immediately sends a minimal
-configuration with `power.stay_awake_on_usb: true`, then verifies the saved
-setting and checks that the device still responds with USB power detected.
-**This replaces the existing configuration and resets Wi-Fi and pull settings.**
-It uses Windows' built-in serial API and needs no Python or WSL USB forwarding.
-Use `-LogPath <file>` to save progress, `-TimeoutSeconds <seconds>` to change
-the watch duration, or `-SelfTest` to check the protocol without opening USB.
-The script exits after success; press Ctrl+C to stop a foreground watcher.
+The browser-management build passed setup hotspot provisioning, NTP/HTTPS,
+HTTP OTA in both slots, two minute changes on battery, RTC retention, GPIO
+wake on USB insertion, and return to persistent Wi-Fi. See
+[`docs/WEB_MANAGEMENT.md`](docs/WEB_MANAGEMENT.md) for evidence and test limits.
+The status-strip-only refresh was visually confirmed on USB.
+[`docs/ABLATION.md`](docs/ABLATION.md) records the architecture decision and
+compile-only size probes; these are not battery-life measurements.
 
 ## License
 

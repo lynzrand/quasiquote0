@@ -23,8 +23,10 @@ upload workers, and operation tracking account for much of the extra machinery.
 - Keep BLE as a capability. Dropping it is a measured alternative, not the
   selected direction. A GATT management API has no demonstrated need yet.
 
-The current firmware does not implement this browser-based management design.
-It still has its USB protocol, per-pull Wi-Fi lifecycle, and USB time setting.
+The implementation now follows this direction. The original measurements
+below remain compile-only probes at the reviewed revision, not measurements
+of the complete replacement. See [WEB_MANAGEMENT.md](WEB_MANAGEMENT.md) for
+the implemented build and hardware checks.
 
 ## Measured flash costs
 

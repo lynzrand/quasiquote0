@@ -25,78 +25,103 @@ The current implementation refreshes the full panel, preserving the retained
 content pixels. Disabling the strip disables minute-only refreshes and wakes;
 critical battery suppresses the heartbeat even when the strip is enabled.
 
-## 1. USB wire protocol (implemented)
+## 1. Management on USB power
 
-The standalone `quote0-clock` bring-up binary uses the same Yamux stream-0
-JSON-RPC framing and exposes `system.ping`, `device.hello`, `device.status`,
-`device.reboot`, `clock.get`, and `clock.set`. `clock.set` accepts
-`{"unix_seconds":1792326341}` (UTC, between 2020 and 2100). The face uses a
-fixed UTC+8 offset. `clock.get` reports time, acknowledged display time and
-refresh count, VBUS/host presence, wake-source setup, and uptime. Frame-client
-and management methods below belong to the `quasiquote0` binary. Both binaries
-support `clock.get` and `clock.set`; the frame client also reports pull interval
-and attempt count. Display refresh/attempt counters are per boot. The clock
-shows `--:--` before synchronization; deep sleep retains time, full power loss
-does not. The frame client's `device.status.display` includes
-`clock_unix_seconds`, `refreshes`, and `error` for acknowledged updates.
+With USB connected, configured devices join their saved Wi-Fi network and keep
+it connected even when pulling is disabled. Unconfigured devices start a WPA2
+setup hotspot `Quote0-<last three MAC bytes>` at `http://192.168.71.1/`.
+The setup password and browser access code are available through physical USB.
+Clearing Wi-Fi credentials enters setup mode without deleting retained content.
+Configuration changes allow one second for the save reply before switching
+the radio. A configured but unreachable network gets bounded connection attempts (15 s,
+then a 30 s retry delay); USB setup remains available to correct credentials.
 
-USB Serial/JTAG (GPIO18/19) carries exactly one **Yamux** session
-(version 0 framing). No log text ever appears on this wire; the
-bootloader and application consoles are disabled.
+The HTTP service runs only on USB power. Battery minute wakes keep networking
+off unless a pull is due. BLE telemetry remains available during awake windows. Only its implemented
+broadcaster role is enabled; scanning, pairing, and GATT connection pools are
+excluded from the normal SDK configuration.
 
-- **Stream 0** is the Quote/0 extension channel: UTF-8
-  newline-delimited JSON-RPC 2.0. A generic Yamux client is not
-  sufficient — it must know to speak NDJSON on stream 0.
-- **Binary transfers** (frame upload, OTA) use device-initiated
-  streams opened by `frame.begin`/`ota.begin`. The response carries
-  the stream ID and an operation ID. The host writes exactly the
-  announced byte count; receipt of the declared length completes the
-  transfer (the device does not wait for EOF).
-- Bounded 4 KiB receive windows per stream and a 4 KiB connection-wide
-  outbound queue provide backpressure; Yamux's 256 KiB protocol credit
-  never becomes a device allocation.
-- Control lines are limited to 16 KiB. Malformed JSON yields a
-  JSON-RPC parse error without resetting the session.
+### USB bootstrap
 
-### JSON-RPC methods (stream 0)
+USB Serial/JTAG accepts UTF-8 JSON, one command per newline, up to 1,024 bytes.
+Oversized lines are discarded through the next newline. No unsolicited logs,
+streams, operation IDs, frame uploads, or firmware uploads use this channel.
+Hardware reset can still produce a ROM banner before the application starts.
 
-| Method                 | Purpose                                             |
-| ---------------------- | --------------------------------------------------- |
-| `system.ping`          | Liveness / framing check                            |
-| `device.hello`         | Protocol version, firmware, hardware, capabilities  |
-| `device.status`        | Battery, filesystem, display, pull, reset token     |
-| `clock.get`            | RTC time, acknowledged display time, power and pull counters |
-| `clock.set`            | Synchronize UTC using integer `unix_seconds` |
-| `device.reboot`        | Orderly reboot after replying                       |
-| `config.get`           | Versioned, secret-redacted configuration            |
-| `config.set`           | Validate and transactionally replace configuration  |
-| `wifi.clear`           | Drop Wi-Fi credentials, keep the displayed frame    |
-| `pull.run`             | Request one immediate pull (USB-attached mode only) |
-| `frame.metadata`       | Desired/displayed hashes and generation metadata    |
-| `frame.begin`          | Open a binary stream for a direct frame upload      |
-| `ota.begin`            | Open a binary stream for an OTA image upload        |
-| `ota.status`           | Active slot, pending upgrade, in-progress flag      |
-| `operation.status`     | Progress/result of a frame or OTA operation         |
-| `diagnostics.get`      | Bounded fault records                               |
-| `device.factoryReset`  | Clear app state behind a confirmation token         |
-| `i2c.scan`             | Bring-up helper: probe an SDA/SCL pair for devices  |
+```json
+{"cmd":"status"}
+{"cmd":"wifi","ssid":"my network","password":"my password"}
+{"cmd":"clear_wifi"}
+```
 
-`device.status` reports a short-lived `factory_reset_token`;
-`device.factoryReset` must echo it as `confirmationToken` and the
-token rotates after every attempt.
+Replies are `{"ok":true,"result":{...}}` or `{"ok":false,"error":"..."}`.
+The status reply wraps its fields in `result.status` and includes the current
+network URL, a persistent random 32-hex `access_token`, and setup SSID/password.
+Only the physical USB status response includes these credentials.
 
-### Binary upload lifecycle
+Windows: `tools/setup_usb.ps1 -WifiProfile <saved-profile> -WaitForNetworkSeconds 30
+-OpenBrowser`. The selected Windows profile is exported temporarily, consumed
+locally, and deleted in `finally`; the Wi-Fi key is never printed or placed in
+the repository. `-ShowAccess` explicitly displays the device access credentials.
+Linux/macOS: `tools/quote0_setup.py --port <port> --wait 30 --open-browser wifi <ssid>`
+prompts for the password. These tools replace the legacy Yamux host client for
+normal firmware; see [legacy diagnostic protocol](LEGACY_USB.md) for that client.
 
-`frame.begin` takes `sha256` (lowercase hex), optional `generation`,
-`source`, `accepted_at_ms`. The transfer is verified against the
-announced digest and the exact 5,624-byte length before it becomes the
-desired frame. `ota.begin` takes `bytes`, `sha256`, optional `version`;
-bytes stream straight into `esp_ota_write`. One frame upload and one
-OTA operation may be active at a time.
+### Browser and HTTP API
+
+`GET /` serves the self-contained browser UI. Every `/api/*` route requires
+`X-Device-Token: <access_token>`. There is no cross-origin API access. The page
+accepts the access code manually or via `/#token=<code>` from the USB launcher;
+it removes the fragment from the address bar and keeps the code in session
+storage. This is a local HTTP service; use it on a trusted network.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/status` | Power, network, NTP, display, pull, storage and OTA state |
+| GET | `/api/config` | Configuration in `config`, with passwords/tokens redacted |
+| POST | `/api/config` | Validated transactional replacement, JSON up to 4,096 bytes |
+| PUT | `/api/frame` | Stream exactly 5,624 canonical bytes into retained storage |
+| PUT | `/api/firmware` | Stream an application image into the inactive OTA slot |
+| POST | `/api/pull` | Schedule an immediate pull when pulling is enabled |
+| POST | `/api/reboot` | Reply, then restart the device |
+
+Frame/firmware requests require `Content-Length` and `X-Content-SHA256` (64
+lowercase hex digits). Firmware length is nonzero and no more than 1,966,080
+bytes. The browser computes the digest before uploading; the device verifies it
+independently. Uploads stream in 512-byte chunks. Frame deadlines are 15 s,
+firmware deadlines 120 s, with the SDK's 5 s idle receive timeout. USB removal
+aborts an upload before publication or OTA boot selection.
+
+One exclusive operation lease covers uploads, configuration writes, scheduled
+pull publication, and reboot. Upload replies report final success/failure;
+there are no asynchronous operation IDs or per-upload workers. Errors return
+JSON (`401` for missing/wrong access code, `409` for a conflicting operation,
+`400` for invalid input, `503` without USB power or available storage).
+The single HTTP server task serializes browser requests.
+
+Configuration GET returns `***` for stored Wi-Fi passwords and bearer tokens.
+POST preserves the stored secret when the corresponding field is `***`; an
+empty string clears it. A successful frame upload means the desired frame is
+durable; `/api/status.display` separately acknowledges panel refresh.
+OTA never buffers the image in RAM or LittleFS. Only a validated complete image
+is selected after persisting the pending marker. The next boot confirms the
+image after storage and USB task initialization, a successful panel refresh,
+and ten seconds of owner-loop progress through radio/server startup; the installed
+bootloader must support rollback. This does not establish full radio health.
+
+### Time
+
+The SDK SNTP service starts only after the station obtains an address. NTP
+updates the RTC; time survives deep sleep. Full power loss shows `--:--` until
+synchronization. USB clock setting is no longer a management prerequisite.
+After a cold boot with unknown time, HTTPS pulls allow 12 s for initial NTP,
+then back off rather than attempting certificate validation with invalid time.
+A battery minute wake never starts Wi-Fi solely to obtain time. The status
+clock remains fixed to UTC+8.
 
 ## 2. Wi-Fi pull protocol (implemented)
 
-The device is an outbound-only HTTP(S) client. On a scheduled or
+The frame-pull channel is an outbound HTTP(S) client. On a scheduled or
 manual pull it sends:
 
 ```http
@@ -131,9 +156,10 @@ HTTPS uses the ESP-IDF certificate bundle; plain HTTP requires
 
 - Default interval 900 s; minimum 60 s (enforced in configuration
   validation).
-- Failures back off exponentially 30 s → 1 h; a manual `pull.run`
+- Failures back off exponentially 30 s → 1 h; a manual `/api/pull`
   bypasses backoff.
-- Wi-Fi is brought up per pull attempt and stopped afterwards.
+- On battery, Wi-Fi is brought up per pull attempt and stopped afterwards.
+  USB power instead keeps the station connected and the browser service available.
 - USB power always keeps the device awake, regardless of the legacy
   `stay_awake_on_usb` setting. GPIO0 VBUS detection and USB host-frame
   detection independently prevent sleep. The legacy field is accepted for
@@ -182,33 +208,11 @@ Measurements (BTHome v2 object IDs):
 Any BTHome-compatible dashboard (Home Assistant, ESPHome proxy, bthome
 app) can track the device's battery and link state without pairing.
 
-### 3.2 GATT frame push (intended, not yet implemented)
+### 3.2 GATT frame push (deferred)
 
-For phone/host pushes without USB, a connectable GATT service mirrors
-the wire protocol's frame upload. UUIDs below are fixed identifiers;
-values are little-endian where applicable.
-
-| Item                        | UUID                                    |
-| --------------------------- | --------------------------------------- |
-| Service                     | `78000000-a1b2-4c3d-8e4f-120030405060`  |
-| Control characteristic      | `78000001-a1b2-4c3d-8e4f-120030405060`  |
-| Frame characteristic        | `78000002-a1b2-4c3d-8e4f-120030405060`  |
-
-- **Control characteristic** (write-with-response, 512-byte MTU
-  chunks, NDJSON, one JSON-RPC per line): reuses the exact stream-0
-  method set of §1, minus `ota.*`. Responses arrive as notifications
-  on the same characteristic.
-- **Frame characteristic** (write-without-response, raw bytes):
-  opened by a successful `frame.begin`; the host writes the announced
-  5,624 bytes in ≤ 244-byte chunks; the device ACKs by notification
-  when the operation completes.
-- Authentication: a `bluetooth.pairing_token` configuration field
-  (set over USB or Wi-Fi) gates `frame.begin`; an empty token refuses
-  all GATT writes. No legacy pairing/encryption is performed in the
-  first revision — the token is the bearer credential.
-
-The practical consequence: the same host client code path
-(`frame.begin` + raw stream) works over USB and BLE.
+BLE remains a capability; a connectable GATT control or frame-push service is
+not implemented. The former JSON-RPC mirror proposal is deferred. It should not
+reintroduce generic management machinery without a demonstrated use case.
 
 ## 4. NFC (hardware finding, closed)
 
@@ -226,4 +230,4 @@ write it, stock or custom.
 Options if device-written NFC is ever required: hardware mod with an
 I2C tag IC (e.g. NT3H2111 or ST25DV64KC on GPIO8/9 — both pins are
 free and quiet), or a one-time rewrite of the passive tag with a
-phone. The `i2c.scan` JSON-RPC method exists to support such bring-up.
+phone. The old `i2c.scan` diagnostic is retained only in legacy source.

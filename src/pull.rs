@@ -4,6 +4,7 @@ use crate::config::PullConfig;
 use crate::store::PullValidators;
 use core::time::Duration;
 use embedded_svc::http::Method;
+use esp_idf_svc::handle::RawHandle;
 use esp_idf_svc::http::client::{Configuration, EspHttpConnection, FollowRedirectsPolicy};
 use std::io::Write;
 
@@ -56,9 +57,20 @@ pub fn fetch(
     if let Some(authorization) = authorization.as_deref() {
         headers.push(("Authorization", authorization));
     }
-    connection
-        .initiate_request(Method::Get, &config.url, &headers)
-        .map_err(|error| error.to_string())?;
+    if let Err(error) = connection.initiate_request(Method::Get, &config.url, &headers) {
+        let (mut tls, mut flags) = (0, 0);
+        let sdk_error = unsafe {
+            esp_idf_sys::esp_http_client_get_and_clear_last_tls_error(
+                connection.handle(),
+                &mut tls,
+                &mut flags,
+            )
+        };
+        let errno = unsafe { esp_idf_sys::esp_http_client_get_errno(connection.handle()) };
+        return Err(format!(
+            "{error}; TLS {tls:#x}, flags {flags:#x}, SDK {sdk_error:#x}, errno {errno}"
+        ));
+    }
     connection
         .initiate_response()
         .map_err(|error| error.to_string())?;

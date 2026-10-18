@@ -2,7 +2,7 @@
 # console claim it; USB Serial/JTAG (GPIO18/19) is the host transport.
 CONFIG_ESP_CONSOLE_NONE=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
-# USB Serial/JTAG carries framed Yamux, not a console. Suppress even the
+# USB Serial/JTAG carries application messages, not a console. Suppress even the
 # pre-application bootloader chatter so a host never mistakes text for a frame.
 CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
 CONFIG_LOG_DEFAULT_LEVEL_NONE=y
@@ -36,3 +36,25 @@ CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
 # that allocate large stack variables; or better yet - use
 # `std::thread::Builder::new().stack_size(XXX)` for spawning
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
+
+# Low-rate frame appliance: reserve room for the panel, BLE, and web uploads.
+# Keep the RX aggregation window within the number of static RX buffers.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_RX_BA_WIN=4
+# Prefer heap headroom over high-throughput Wi-Fi code in instruction RAM.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+# Release TLS record buffers between reads/writes; keep the full 16 KiB
+# inbound record limit for ordinary HTTPS servers.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
+# The implemented BLE feature is a non-connectable BTHome beacon. Do not
+# reserve scanning, pairing, or GATT connection pools for deferred features.
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_SECURITY_ENABLE=n
+CONFIG_BT_CTRL_BLE_MAX_ACT=1

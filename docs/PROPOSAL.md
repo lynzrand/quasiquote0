@@ -11,8 +11,9 @@ Firmware project: `quasiquote0`
 An [ablation review on 2026-10-18](ABLATION.md) records the agreed next design:
 keep Wi-Fi connected and serve a browser UI on USB power, use a setup hotspot
 when unconfigured, retain a small USB bootstrap path and BLE capability, and
-synchronize time through NTP. This is a planned replacement for the USB-only
-management contract below; the current firmware has not migrated yet.
+synchronize time through NTP. This replacement is implemented in the main application. The current
+contracts are in [PROTOCOL.md](PROTOCOL.md); the original USB-only design
+below is historical background and is superseded where the two differ.
 
 The main application remains a remote framebuffer. The separate `quote0-clock`
 binary is a bring-up diagnostic, not a change to the server-rendered content
@@ -34,13 +35,18 @@ to the strip on USB, with user-confirmed visual isolation. It is not a fast
 differential waveform and does not retain its partial baseline across battery
 sleep. See [`PARTIAL_REFRESH.md`](PARTIAL_REFRESH.md) for results and scope.
 
-The frame client already implements USB management, durable frames,
-HTTP(S) pulling, display composition, battery scheduling, and streamed OTA.
-Implementation alone does not satisfy the acceptance criteria below. The next
-milestone is end-to-end HTTP(S) pull and OTA validation on the board, including
-unchanged/invalid response handling and interrupted upgrades. Connectable BLE
-frame push remains a subsequent feature; its draft contract is in
-[`PROTOCOL.md`](PROTOCOL.md#32-gatt-frame-push-intended-not-yet-implemented).
+The frame client implements browser management on USB power, a setup hotspot,
+a bounded physical USB bootstrap, NTP, durable frames, HTTP(S) pulling,
+display composition, battery scheduling, BLE telemetry, and streamed HTTP OTA.
+Hardware acceptance results for this migration are recorded separately in
+[WEB_MANAGEMENT.md](WEB_MANAGEMENT.md). Connectable BLE frame push is deferred.
+
+## Original design background (superseded)
+
+The remaining sections record the original Yamux/USB proposal. Use
+[PROTOCOL.md](PROTOCOL.md) for the current management and radio lifecycle.
+The frame format, durability, critical battery, and rollback requirements
+remain applicable.
 
 ## Summary
 
