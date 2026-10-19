@@ -2,8 +2,7 @@
 
 Normative contracts for everything that crosses the device boundary:
 the USB wire protocol, the Wi-Fi pull protocol, and the Bluetooth
-protocol. Design rationale lives in [`PROPOSAL.md`](PROPOSAL.md); this
-document describes the contracts as implemented or intended, and flags
+protocol. This document describes the implemented contracts and flags
 anything not yet on hardware.
 
 The canonical frame format is shared by every channel:
@@ -64,8 +63,7 @@ Windows: `tools/setup_usb.ps1 -WifiProfile <saved-profile> -WaitForNetworkSecond
 locally, and deleted in `finally`; the Wi-Fi key is never printed or placed in
 the repository. `-ShowAccess` explicitly displays the device access credentials.
 Linux/macOS: `tools/quote0_setup.py --port <port> --wait 30 --open-browser wifi <ssid>`
-prompts for the password. These tools replace the legacy Yamux host client for
-normal firmware; see [legacy diagnostic protocol](LEGACY_USB.md) for that client.
+prompts for the password. 
 
 ### Browser and HTTP API
 
@@ -183,9 +181,8 @@ HTTPS uses the ESP-IDF certificate bundle; plain HTTP requires
 
 ## 3. Bluetooth Low Energy
 
-The radio runs the NimBLE host. Two services are defined; the beacon
-is implemented, the GATT push channel is specified but **not yet
-implemented**.
+The NimBLE host broadcasts BTHome v2 telemetry. No connectable service,
+scanning, pairing, or GATT management is included.
 
 ### 3.1 BTHome v2 beacon (implemented)
 
@@ -213,12 +210,6 @@ Measurements (BTHome v2 object IDs):
 Any BTHome-compatible dashboard (Home Assistant, ESPHome proxy, bthome
 app) can track the device's battery and link state without pairing.
 
-### 3.2 GATT frame push (deferred)
-
-BLE remains a capability; a connectable GATT control or frame-push service is
-not implemented. The former JSON-RPC mirror proposal is deferred. It should not
-reintroduce generic management machinery without a demonstrated use case.
-
 ## 4. NFC (hardware finding, closed)
 
 The product's tap-to-open-App-Clip feature is a **passive NFC tag
@@ -232,7 +223,3 @@ device. The tag is powered by the reader's RF field and has **no
 electrical connection to the ESP32-C3** — the firmware cannot read or
 write it, stock or custom.
 
-Options if device-written NFC is ever required: hardware mod with an
-I2C tag IC (e.g. NT3H2111 or ST25DV64KC on GPIO8/9 — both pins are
-free and quiet), or a one-time rewrite of the passive tag with a
-phone. The old `i2c.scan` diagnostic is retained only in legacy source.

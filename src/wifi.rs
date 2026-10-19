@@ -1,7 +1,7 @@
 //! ESP32-C3 Wi-Fi station driver.
 //!
 //! This module owns only radio mechanics. Credential storage, retry policy,
-//! and application networking belong in the eventual firmware crate.
+//! and application networking belong in `network`.
 
 use esp_idf_hal::modem::Modem;
 use esp_idf_hal::sys::EspError;
@@ -83,13 +83,7 @@ impl<'d> WifiStation<'d> {
     pub fn connect(&mut self) -> Result<(), EspError> {
         self.inner.connect()
     }
-    pub fn disconnect(&mut self) -> Result<(), EspError> {
-        self.inner.disconnect()
-    }
     pub fn is_up(&self) -> Result<bool, EspError> {
         self.inner.is_up()
-    }
-    pub fn inner(&mut self) -> &mut EspWifi<'d> {
-        &mut self.inner
     }
 }

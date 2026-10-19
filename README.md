@@ -4,8 +4,7 @@ Flashable, cloud-free frame-client firmware for the MindReset Quote/0 board
 (ESP32-C3 driving a UC8251D e-paper panel).
 
 The current management, frame, and durability contracts are documented in
-[`docs/PROTOCOL.md`](docs/PROTOCOL.md); the original design background is in
-[`docs/PROPOSAL.md`](docs/PROPOSAL.md). The firmware
+[`docs/PROTOCOL.md`](docs/PROTOCOL.md). The firmware
 owns Wi-Fi pulling, LittleFS persistence, panel refreshes, USB
 configuration, and streamed OTA; servers supply only canonical 296x152
 monochrome frames.
@@ -42,9 +41,7 @@ python3 tools/quote0_setup.py --port /dev/ttyACM0 status
 python3 tools/quote0_setup.py --port /dev/ttyACM0 --wait 30 --open-browser wifi "My Wi-Fi"
 ```
 
-USB now carries only bounded setup/status messages. The previous Yamux/JSON-RPC
-client and watcher apply to old firmware and the standalone diagnostic; they
-are not the normal application's management interface. See
+USB carries bounded setup/status messages. See
 [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the current APIs.
 
 ### Image uploads
@@ -74,13 +71,6 @@ The opt-in `experimental-partial` feature confines unchanged-content updates
 to the status strip after a full baseline in the same boot. This was visually
 verified on USB; it uses the stock waveform with no measured speed gain.
 Battery wakes still use full refresh. See [`docs/PARTIAL_REFRESH.md`](docs/PARTIAL_REFRESH.md).
-
-### Standalone clock diagnostic
-
-`cargo build --locked --bin quote0-clock --features legacy-usb` builds the
-original large-clock smoke test without Wi-Fi, BLE, or filesystem access.
-Its USB time tools remain `tools/clock_usb.ps1 -SyncTime` and
-`tools/quasiquote0_usb.py`. See [`docs/LEGACY_USB.md`](docs/LEGACY_USB.md).
 
 ### NFC
 
@@ -117,10 +107,10 @@ formats an erased LittleFS volume on first boot and enters USB-accessible setup.
 | Module | Scope |
 | --- | --- |
 | `wifi` | ESP-IDF Wi-Fi station construction, configuration, and link control |
-| `bluetooth` | BTHome v2 advertising payload encoding; application owns NimBLE lifecycle |
+| `bluetooth` | NimBLE lifecycle and BTHome v2 advertising |
 | `usb_serial` | exclusive USB Serial/JTAG transport on GPIO18/19 |
 | `display` | native 152x296, 1bpp UC8251D framebuffer and Quote/0 panel GPIO ownership |
-| `embedded_graphics` | `embedded-graphics` `DrawTarget` over the native framebuffer |
+| `embedded_graphics` | `embedded-graphics` `DrawTarget` over the landscape framebuffer |
 
 The firmware starts the USB bootstrap task before optional radio and panel
 setup. HTTP starts after the network stack is ready. Browser uploads and
@@ -204,13 +194,10 @@ cargo +stable test --manifest-path /path/to/quasiquote0/tests/host/Cargo.toml \
   --target x86_64-unknown-linux-gnu --target-dir /path/to/quasiquote0/target/host-tests
 ```
 
-The browser-management build passed setup hotspot provisioning, NTP/HTTPS,
-HTTP OTA in both slots, two minute changes on battery, RTC retention, GPIO
-wake on USB insertion, and return to persistent Wi-Fi. See
-[`docs/WEB_MANAGEMENT.md`](docs/WEB_MANAGEMENT.md) for evidence and test limits.
-The status-strip-only refresh was visually confirmed on USB.
-[`docs/ABLATION.md`](docs/ABLATION.md) records the architecture decision and
-compile-only size probes; these are not battery-life measurements.
+Hardware checks have covered setup hotspot provisioning, NTP/HTTPS, OTA in both
+slots, minute updates on battery, RTC retention, and wake on USB insertion.
+The optional status-strip-only refresh was visually confirmed on USB; see
+[`docs/PARTIAL_REFRESH.md`](docs/PARTIAL_REFRESH.md) for its limits.
 
 ## License
 

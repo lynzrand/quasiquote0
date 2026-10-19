@@ -1,11 +1,5 @@
-//! Minute-only, landscape clock face. UTC is stored in the RTC; display is UTC+8.
+//! Minute clock for the status bar. UTC is stored in the RTC; display is UTC+8.
 
-use crate::embedded_graphics::LandscapeFramebuffer;
-use crate::frame::Frame;
-use embedded_graphics::mono_font::{ascii::FONT_6X10, MonoTextStyle};
-use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::prelude::*;
-use embedded_graphics::text::{Alignment, Text};
 use serde::Serialize;
 
 pub const UTC_OFFSET_MINUTES: i64 = 8 * 60;
@@ -46,62 +40,6 @@ pub fn seconds_until_next_minute(unix_seconds: i64) -> u64 {
     (60 - unix_seconds.rem_euclid(60)) as u64
 }
 
-fn rectangle(frame: &mut Frame, x: usize, y: usize, width: usize, height: usize) {
-    for py in y..y + height {
-        for px in x..x + width {
-            frame.set_pixel(px, py, false);
-        }
-    }
-}
-
-pub fn render(face: ClockFace) -> Frame {
-    let mut frame = Frame::white();
-    let digits = match face {
-        ClockFace::Minute { hour, minute } => [hour / 10, hour % 10, minute / 10, minute % 10],
-        ClockFace::WaitingForTime => [10; 4],
-    };
-    // A B C D E F G; the final entry is the unsynchronized dash.
-    const MASKS: [u8; 11] = [
-        0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f, 0x40,
-    ];
-    const SEGMENTS: [(usize, usize, usize, usize); 7] = [
-        (6, 0, 28, 6),
-        (34, 6, 6, 32),
-        (34, 44, 6, 32),
-        (6, 76, 28, 6),
-        (0, 44, 6, 32),
-        (0, 6, 6, 32),
-        (6, 38, 28, 6),
-    ];
-    for (digit, x) in digits.into_iter().zip([35, 85, 171, 221]) {
-        for (bit, (dx, dy, width, height)) in SEGMENTS.into_iter().enumerate() {
-            if MASKS[digit as usize] & (1 << bit) != 0 {
-                rectangle(&mut frame, x + dx, 32 + dy, width, height);
-            }
-        }
-    }
-    rectangle(&mut frame, 145, 53, 6, 6);
-    rectangle(&mut frame, 145, 89, 6, 6);
-    let mut target = LandscapeFramebuffer(&mut frame);
-    let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::Off);
-    Text::with_alignment("Quote/0", Point::new(148, 17), style, Alignment::Center)
-        .draw(&mut target)
-        .unwrap();
-    Text::with_alignment(
-        if face == ClockFace::WaitingForTime {
-            "Waiting for time"
-        } else {
-            "HONG KONG  UTC+8"
-        },
-        Point::new(148, 140),
-        style,
-        Alignment::Center,
-    )
-    .draw(&mut target)
-    .unwrap();
-    frame
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,14 +65,5 @@ mod tests {
             ClockFace::at(MIN_UNIX_SECONDS + 60)
         );
         assert_eq!(ClockFace::at(0), ClockFace::WaitingForTime);
-    }
-
-    #[test]
-    fn render_uses_landscape_and_leaves_the_outer_margin_white() {
-        let frame = render(ClockFace::at(MIN_UNIX_SECONDS));
-        assert_eq!(frame.pixel_is_white(145, 53), Some(false));
-        assert_eq!(frame.pixel_is_white(0, 0), Some(true));
-        assert_eq!(frame.pixel_is_white(295, 151), Some(true));
-        assert!(frame.as_bytes().iter().any(|b| *b != 0xff));
     }
 }

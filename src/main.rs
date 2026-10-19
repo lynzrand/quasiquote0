@@ -1,7 +1,6 @@
 //! Quote/0 appliance firmware entry point.
 use esp_idf_hal::peripherals::Peripherals;
 use quasiquote0::display::{Epd, EpdPins};
-use quasiquote0::frame::Projection;
 use quasiquote0::refresh_policy::{RefreshKey, RefreshTracker};
 use quasiquote0::status_bar::{BatteryMarker, StatusBar, WifiMarker};
 use quasiquote0::usb_serial::UsbSerial;
@@ -274,7 +273,7 @@ fn refresh_pending_frame(
         .overlay(&mut frame);
     }
     let composed = frame.sha256();
-    let projected = frame.project(Projection::Clockwise);
+    let projected = frame.project();
     let partial = cfg!(feature = "experimental-partial") && refreshes.can_refresh_status_only(key);
     let started = rtc_schedule::now_ms();
     let mut mode = if partial { "partial-window" } else { "full" };

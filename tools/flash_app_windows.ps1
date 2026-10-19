@@ -3,7 +3,6 @@
 param(
     [Parameter(Mandatory = $true)][string]$Image,
     [string]$Port = 'COM4',
-    [switch]$LegacyClock,
     [ValidateSet("auto", "ota_0", "ota_1")][string]$Slot = "auto"
 )
 $ErrorActionPreference = 'Stop'
@@ -11,7 +10,7 @@ $repo = Split-Path $PSScriptRoot -Parent
 $image = (Resolve-Path -LiteralPath $Image).ProviderPath
 New-Item -ItemType Directory -Path "$repo\target\app-flash" -Force | Out-Null
 if (-not (Test-Path -LiteralPath $image)) { throw 'Build and convert the application image first.' }
-if ((Get-Item -LiteralPath $image).Length -gt 0x1e0000) { throw 'Application image exceeds ota_0.' }
+if ((Get-Item -LiteralPath $image).Length -gt 0x1e0000) { throw 'Application image exceeds an OTA slot.' }
 if ($Slot -eq 'auto') {
     try {
         $status = & "$PSScriptRoot\setup_usb.ps1" -Port $Port -PassThru
@@ -56,8 +55,4 @@ if ($result -ne 0 -or -not $transcript.Contains('APP_FLASH_VERIFIED')) {
 }
 Write-Host 'Application flash verified. Checking USB recovery.'
 Start-Sleep -Seconds 1
-if ($LegacyClock) {
-    & "$PSScriptRoot\clock_usb.ps1" -Port $Port -SyncTime -WaitForDisplaySeconds 30
-} else {
-    & "$PSScriptRoot\setup_usb.ps1" -Port $Port -WaitForNetworkSeconds 20
-}
+& "$PSScriptRoot\setup_usb.ps1" -Port $Port -WaitForNetworkSeconds 20

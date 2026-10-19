@@ -75,20 +75,16 @@ fn arm_wake_sources_inner(seconds: u64) -> Result<(), &'static str> {
 /// Returns if USB, recovery time, or an upload prevents sleeping. GPIO0 is
 /// armed before the final check, so insertion during that race wakes us again.
 pub fn try_deep_sleep(seconds: u64) -> Result<(), &'static str> {
-    if must_stay_awake() || transfers_active() {
+    if must_stay_awake() || operations_active() {
         return Ok(());
     }
     arm_wake_sources(seconds)?;
-    if must_stay_awake() || transfers_active() {
+    if must_stay_awake() || operations_active() {
         return Ok(());
     }
     unsafe { esp_idf_sys::esp_deep_sleep_start() }
 }
 
-fn transfers_active() -> bool {
-    #[cfg(feature = "legacy-usb")]
-    if crate::rpc::uploads_active() {
-        return true;
-    }
+fn operations_active() -> bool {
     crate::activity::OPERATIONS.is_active()
 }

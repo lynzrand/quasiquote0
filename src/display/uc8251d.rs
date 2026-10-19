@@ -3,7 +3,7 @@
 //! This owns GPIO state and the SPI device. It uses the board-proven init and
 //! full-frame transfer sequence from the bundled Quote/0 reference firmware.
 
-use super::{luts, Frame, FRAME_BYTES};
+use super::{luts, Frame};
 use core::ptr;
 use esp_idf_hal::delay::FreeRtos;
 use esp_idf_hal::gpio::{
@@ -11,14 +11,14 @@ use esp_idf_hal::gpio::{
 };
 use esp_idf_hal::spi::SPI2;
 
-pub const SPI_CLOCK_HZ: u32 = 15_000_000;
-pub const PIN_BUSY: u32 = 3;
-pub const PIN_RST: u32 = 4;
-pub const PIN_DC: u32 = 5;
-pub const PIN_CS: u32 = 6;
-pub const PIN_POWER: u32 = 20;
-pub const PIN_SCLK: u32 = 10;
-pub const PIN_MOSI: u32 = 7;
+const SPI_CLOCK_HZ: u32 = 15_000_000;
+const PIN_BUSY: u32 = 3;
+const PIN_RST: u32 = 4;
+const PIN_DC: u32 = 5;
+const PIN_CS: u32 = 6;
+const PIN_POWER: u32 = 20;
+const PIN_SCLK: u32 = 10;
+const PIN_MOSI: u32 = 7;
 const MAX_TRANSFER: usize = 4096;
 
 pub struct EpdPins<'d> {
@@ -120,7 +120,7 @@ impl<'d> Epd<'d> {
 
     /// The BUSY signal is open-drain; the required pull-up is installed by
     /// `new`. `true` means the panel is idle and accepts the next command.
-    pub fn is_idle(&self) -> bool {
+    fn is_idle(&self) -> bool {
         self.busy.is_high()
     }
 
@@ -173,7 +173,7 @@ impl<'d> Epd<'d> {
     }
 
     /// Bring the panel supply, controller, and scan configuration online.
-    pub fn power_on(&mut self) -> Result<(), &'static str> {
+    fn power_on(&mut self) -> Result<(), &'static str> {
         if !self.sleeping {
             return Ok(());
         }
@@ -223,14 +223,6 @@ impl<'d> Epd<'d> {
         self.data(luts::lut_24())?;
         self.sleeping = false;
         Ok(())
-    }
-
-    /// Validates the payload expected by the UC8251D SPI transfer.
-    pub fn validate_frame(frame: &Frame) -> usize {
-        frame.as_bytes().len()
-    }
-    pub const fn frame_bytes() -> usize {
-        FRAME_BYTES
     }
 
     /// Send a complete native Quote/0 framebuffer and wait for its refresh.
@@ -290,7 +282,7 @@ impl<'d> Epd<'d> {
 
     /// Power down the controller after a completed refresh. The panel retains
     /// its image; the next display runs the full board-proven init sequence.
-    pub fn sleep(&mut self) -> Result<(), &'static str> {
+    fn sleep(&mut self) -> Result<(), &'static str> {
         if self.sleeping {
             return Ok(());
         }

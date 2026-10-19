@@ -7,11 +7,6 @@ pub const HEIGHT: usize = 296;
 pub const ROW_BYTES: usize = WIDTH / 8;
 pub const FRAME_BYTES: usize = ROW_BYTES * HEIGHT;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrameError {
-    WrongLength,
-}
-
 #[derive(Clone, Eq, PartialEq)]
 pub struct Frame {
     bytes: [u8; FRAME_BYTES],
@@ -28,22 +23,8 @@ impl Frame {
             bytes: [0xff; FRAME_BYTES],
         }
     }
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, FrameError> {
-        if bytes.len() != FRAME_BYTES {
-            return Err(FrameError::WrongLength);
-        }
-        let mut frame = Self::black();
-        frame.bytes.copy_from_slice(bytes);
-        Ok(frame)
-    }
     pub fn as_bytes(&self) -> &[u8; FRAME_BYTES] {
         &self.bytes
-    }
-    pub fn as_bytes_mut(&mut self) -> &mut [u8; FRAME_BYTES] {
-        &mut self.bytes
-    }
-    pub fn clear(&mut self, white: bool) {
-        self.bytes.fill(if white { 0xff } else { 0 });
     }
     pub fn pixel_is_white(&self, x: usize, y: usize) -> Option<bool> {
         if x >= WIDTH || y >= HEIGHT {

@@ -10,7 +10,7 @@ settings. MindReset's [public display driver](https://github.com/MindReset/dot_o
 provides full refresh only; its [waveform notes](https://github.com/MindReset/dot_open_platform/blob/main/devices/quote_0/firmware-resources/display/waveforms/README.md)
 provide no separate partial waveform.
 
-The bundled `target/quote0/re/datasheets/GDEQ0213Z19.pdf` describes the
+During bring-up, the GDEQ0213Z19 datasheet was used to check the
 UC8251D command family, including `0x90` (window), `0x91` (partial in), and
 `0x92` (partial out). That PDF covers a different 104x212 color panel, not
 this 152x296 monochrome Quote/0 panel. It is a register reference rather
@@ -28,7 +28,7 @@ The partial budget and baseline are currently per boot: battery deep-sleep
 wakes use full refresh. RTC retention of a partial baseline is deferred
 until the physical window behavior is verified. USB always remains awake.
 
-`clock.get.display` includes `refresh_mode` (`full`, `partial-window`, or
+`GET /api/status` under `display` includes `refresh_mode` (`full`, `partial-window`, or
 `full-fallback`), `refresh_ms` (complete panel transaction, including setup
 and sleep), and `partial_error`. A completed transaction alone does not
 prove that only the selected pixels refreshed; visual confirmation is
@@ -48,7 +48,7 @@ pull ran, and the user confirmed that only the status strip refreshed.
 The complete partial transaction took 2,249 ms versus 2,265 ms for its full
 baseline. This demonstrates the selected area, not a meaningful refresh
 speed or battery-life improvement. The regular and experimental builds
-both compile, and all 28 host tests pass.
+both compile and pass the host policy tests.
 
 Further work is needed for a separately validated fast differential
 waveform and for retaining the partial baseline/budget across battery
