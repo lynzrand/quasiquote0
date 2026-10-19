@@ -4,7 +4,6 @@ use crate::{
     app::App,
     config::Config,
     frame::{Sha256Digest, FRAME_BYTES},
-    store::FrameMeta,
 };
 use embedded_svc::http::{server::Request, Method};
 use esp_idf_hal::io::{Read as EmbeddedRead, Write as EmbeddedWrite};
@@ -184,14 +183,7 @@ fn handle(
                     device
                         .lock()
                         .unwrap()
-                        .commit_frame(
-                            digest,
-                            FrameMeta {
-                                source: "browser".into(),
-                                generation: String::new(),
-                                accepted_at_ms: crate::rtc_schedule::now_ms(),
-                            },
-                        )
+                        .commit_frame(digest)
                         .map_err(|e| e.to_string())?;
                     Ok(json!({"accepted":true,"sha256":crate::frame::digest_hex(&digest)}))
                 } else {
@@ -202,7 +194,7 @@ fn handle(
                     device
                         .lock()
                         .unwrap()
-                        .mark_ota_pending(None)
+                        .mark_ota_pending()
                         .map_err(|e| e.to_string())?;
                     crate::ota::select_staged_partition()?;
                     Ok(json!({"accepted":true,"rebooting":true}))

@@ -9,18 +9,40 @@ pub const DEFAULT_PULL_TIMEOUT_SECONDS: u64 = 15;
 pub const MIN_BATTERY_PULL_INTERVAL_SECONDS: u64 = 60;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "ConfigInput")]
 pub struct Config {
-    #[serde(default = "default_schema")]
     pub schema: u32,
-    #[serde(default)]
     pub wifi: WifiConfig,
-    #[serde(default)]
     pub pull: PullConfig,
-    #[serde(default)]
     pub display: DisplayConfig,
+}
+
+// Accept the retired power object when upgrading a saved v1 configuration.
+// It never affects behavior and is omitted when writing the current format.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigInput {
+    #[serde(default = "default_schema")]
+    schema: u32,
     #[serde(default)]
-    pub power: PowerConfig,
+    wifi: WifiConfig,
+    #[serde(default)]
+    pull: PullConfig,
+    #[serde(default)]
+    display: DisplayConfig,
+    #[serde(default, rename = "power")]
+    _legacy_power: Option<serde::de::IgnoredAny>,
+}
+
+impl From<ConfigInput> for Config {
+    fn from(input: ConfigInput) -> Self {
+        Self {
+            schema: input.schema,
+            wifi: input.wifi,
+            pull: input.pull,
+            display: input.display,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
@@ -56,22 +78,6 @@ pub struct DisplayConfig {
     pub status_bar: bool,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct PowerConfig {
-    /// Retained for schema compatibility. USB power always keeps the MCU awake.
-    #[serde(default = "default_stay_awake_on_usb")]
-    pub stay_awake_on_usb: bool,
-}
-
-impl Default for PowerConfig {
-    fn default() -> Self {
-        Self {
-            stay_awake_on_usb: true,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigError(pub &'static str);
 
@@ -90,7 +96,6 @@ impl Default for Config {
             wifi: WifiConfig::default(),
             pull: PullConfig::default(),
             display: DisplayConfig::default(),
-            power: PowerConfig::default(),
         }
     }
 }
@@ -183,9 +188,6 @@ const fn default_pull_timeout() -> u64 {
 const fn default_status_bar() -> bool {
     true
 }
-const fn default_stay_awake_on_usb() -> bool {
-    true
-}
 
 fn redact(value: &str) -> String {
     if value.is_empty() {
@@ -204,7 +206,6 @@ mod tests {
         let config = Config::default();
         assert!(!config.pull.enabled);
         assert!(config.display.status_bar);
-        assert!(config.power.stay_awake_on_usb);
         assert!(config.validate().is_ok());
     }
 
@@ -221,11 +222,25 @@ mod tests {
     }
 
     #[test]
-    fn omitted_power_and_empty_power_have_the_same_safe_defaults() {
-        let omitted: Config = serde_json::from_str("{}").unwrap();
-        let empty: Config = serde_json::from_str(r#"{"power":{}}"#).unwrap();
-        assert_eq!(omitted.power, empty.power);
-        assert!(omitted.power.stay_awake_on_usb);
+    fn old_power_setting_is_ignored_without_losing_credentials() {
+        let config: Config = serde_json::from_str(
+            r#"{
+            "wifi":{"ssid":"saved-network","password":"saved-secret"},
+            "power":{"stay_awake_on_usb":false}
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(config.wifi.ssid, "saved-network");
+        assert_eq!(config.wifi.password, "saved-secret");
+        assert!(config.validate().is_ok());
+        let current = serde_json::to_value(&config).unwrap();
+        assert!(current.get("power").is_none());
+        assert_eq!(serde_json::from_value::<Config>(current).unwrap(), config);
+        assert_eq!(
+            serde_json::from_str::<Config>(r#"{"power":{}}"#).unwrap(),
+            Config::default()
+        );
+        assert!(serde_json::from_str::<Config>(r#"{"pulll":{}}"#).is_err());
     }
 
     #[test]

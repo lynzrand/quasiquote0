@@ -1,4 +1,4 @@
-use quasiquote0_host_tests::{device::Device, frame::Frame, store::FrameMeta};
+use quasiquote0_host_tests::{device::Device, frame::Frame, frame::Sha256Digest};
 use std::{
     fs,
     io::Write,
@@ -25,12 +25,21 @@ impl Drop for Scratch {
     }
 }
 
+// Exercise the streamed writer and durable publication used by HTTP uploads.
+fn publish(device: &mut Device, frame: &Frame) -> Result<Sha256Digest, Box<dyn std::error::Error>> {
+    let mut writer = device.begin_frame_write(frame.sha256())?;
+    writer.write_all(frame.as_bytes())?;
+    let digest = writer.finish()?;
+    device.commit_frame(digest)?;
+    Ok(digest)
+}
+
 #[test]
 fn rejected_upload_preserves_the_durable_frame() {
     let root = Scratch::new();
     let mut device = root.device();
     let old = Frame::white();
-    device.accept_frame(&old, FrameMeta::default()).unwrap();
+    publish(&mut device, &old).unwrap();
     let mut writer = device.begin_frame_write(old.sha256()).unwrap();
     writer.write_all(Frame::black().as_bytes()).unwrap();
     assert!(writer.finish().is_err());
@@ -50,15 +59,13 @@ fn failed_state_write_does_not_publish_new_desired_state_in_ram() {
     let root = Scratch::new();
     let mut device = root.device();
     let old = Frame::white();
-    device.accept_frame(&old, FrameMeta::default()).unwrap();
+    publish(&mut device, &old).unwrap();
     let state_path = root.0.join("state/device.v1.json");
     let saved = fs::read(&state_path).unwrap();
     fs::remove_file(state_path).unwrap();
     fs::remove_dir(root.0.join("state")).unwrap();
     fs::write(root.0.join("state"), b"block state writes").unwrap();
-    assert!(device
-        .accept_frame(&Frame::black(), FrameMeta::default())
-        .is_err());
+    assert!(publish(&mut device, &Frame::black()).is_err());
     assert_eq!(
         device.state().desired.as_ref().unwrap().sha256,
         old.sha256_hex()
@@ -78,28 +85,59 @@ fn failed_state_write_does_not_publish_new_desired_state_in_ram() {
 }
 
 #[test]
-fn reset_leaves_a_valid_schema_for_subsequent_frame_writes() {
+fn old_saved_state_and_configuration_keep_credentials_and_content() {
     let root = Scratch::new();
     let mut device = root.device();
-    device
-        .accept_frame(&Frame::black(), FrameMeta::default())
-        .unwrap();
-    device.factory_reset().unwrap();
-    assert_eq!(device.state().schema, 1);
-    device
-        .accept_frame(&Frame::white(), FrameMeta::default())
-        .unwrap();
+    let digest = publish(&mut device, &Frame::black()).unwrap();
     drop(device);
-    assert!(root.device().load_desired_frame().unwrap().is_some());
+    let state_path = root.0.join("state/device.v1.json");
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    state["desired"]["meta"] =
+        serde_json::json!({"generation":"v1","source":"browser","accepted_at_ms":123});
+    state["pull"] = serde_json::json!({"etag":"old-etag","last_modified":null,"last_success_ms":123,"last_error":null});
+    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    fs::write(
+        root.0.join("config/device.v1.json"),
+        br#"{
+        "schema":1,"wifi":{"ssid":"saved-network","password":"saved-secret"},
+        "power":{"stay_awake_on_usb":false}
+    }"#,
+    )
+    .unwrap();
+    let mut device = root.device();
+    assert_eq!(device.state().schema, 1);
+    assert_eq!(device.desired_digest().unwrap(), digest);
+    assert_eq!(
+        device.load_desired_frame().unwrap().unwrap().as_bytes(),
+        Frame::black().as_bytes()
+    );
+    assert_eq!(device.state().pull.etag.as_deref(), Some("old-etag"));
+    assert_eq!(device.config().wifi.password, "saved-secret");
+    device.replace_config(device.config().clone()).unwrap();
+    let current = fs::read_to_string(root.0.join("config/device.v1.json")).unwrap();
+    assert!(!current.contains("stay_awake_on_usb"));
+    assert_eq!(root.device().config().wifi.ssid, "saved-network");
+}
+
+#[test]
+fn failed_ota_marker_write_leaves_ram_and_flash_unchanged() {
+    let root = Scratch::new();
+    let mut device = root.device();
+    publish(&mut device, &Frame::white()).unwrap();
+    let state_path = root.0.join("state/device.v1.json");
+    fs::create_dir(root.0.join("state/device.v1.json.new")).unwrap();
+    assert!(device.mark_ota_pending().is_err());
+    assert!(device.state().ota_pending.is_none());
+    let state: serde_json::Value = serde_json::from_slice(&fs::read(state_path).unwrap()).unwrap();
+    assert!(state["ota_pending"].is_null());
 }
 
 #[test]
 fn a_corrupted_retained_frame_is_rejected() {
     let root = Scratch::new();
     let mut device = root.device();
-    let digest = device
-        .accept_frame(&Frame::white(), FrameMeta::default())
-        .unwrap();
+    let digest = publish(&mut device, &Frame::white()).unwrap();
     fs::write(
         root.0.join(format!(
             "frames/{}.bin",

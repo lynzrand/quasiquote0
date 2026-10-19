@@ -157,7 +157,7 @@ fn main() {
             WifiMarker::Disconnected
         });
         if let Some(bluetooth) = &bluetooth {
-            bluetooth.advertise(&quasiquote0::bluetooth::BthomeAdvertisement {
+            bluetooth.advertise(&quasiquote0::bthome::BthomeAdvertisement {
                 battery_percent: battery.percent.unwrap_or_default() as u8,
                 battery_mv: battery.millivolts.unwrap_or_default() as u16,
                 battery_low: battery.percent.is_some_and(|percent| percent < 20),
@@ -214,7 +214,7 @@ fn pull_failed(app: &App, schedule: &mut PullSchedule, error: String) {
     app.pull_requested.store(false, Ordering::Release);
     schedule.failed(rtc_schedule::now_ms());
     if let Some(device) = &app.device {
-        let _ = device.lock().unwrap().record_pull_error(error);
+        device.lock().unwrap().record_pull_error(error);
     }
 }
 
@@ -327,7 +327,6 @@ fn refresh_pending_frame(
 fn run_scheduled_pull(app: &App) -> Result<(), String> {
     let device = app.device.as_ref().ok_or("Storage recovery required")?;
     let (config, validators) = device.lock().unwrap().pull_snapshot();
-    let now_ms = rtc_schedule::now_ms();
     device.lock().unwrap().pull_attempts += 1;
     let mut writer = device
         .lock()
@@ -351,14 +350,10 @@ fn run_scheduled_pull(app: &App) -> Result<(), String> {
                 .unwrap()
                 .commit_pulled_frame(
                     digest,
-                    quasiquote0::store::FrameMeta {
-                        generation: response.etag.clone().unwrap_or_default(),
-                        source: "http-pull".into(),
-                        accepted_at_ms: now_ms,
+                    quasiquote0::store::PullValidators {
+                        etag: response.etag,
+                        last_modified: response.last_modified,
                     },
-                    response.etag,
-                    response.last_modified,
-                    now_ms,
                 )
                 .map_err(|e| e.to_string())
         }

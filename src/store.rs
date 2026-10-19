@@ -26,25 +26,15 @@ const ADMIN_PATH: &str = "config/admin.v1.json";
 const STATE_PATH: &str = "state/device.v1.json";
 const FRAME_DIRECTORY: &str = "frames";
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
-pub struct FrameMeta {
-    pub generation: String,
-    pub source: String,
-    pub accepted_at_ms: u64,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct DesiredFrame {
     pub sha256: String,
-    pub meta: FrameMeta,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
 pub struct PullValidators {
     pub etag: Option<String>,
     pub last_modified: Option<String>,
-    pub last_success_ms: Option<u64>,
-    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -193,25 +183,6 @@ impl Store {
         self.write_json_atomic(CONFIG_PATH, config)
     }
 
-    pub fn clear_config(&self) -> Result<(), StoreError> {
-        self.remove_optional(CONFIG_PATH)
-    }
-
-    /// Remove only application-owned state. The mounted volume and both OTA
-    /// application slots are deliberately left alone.
-    pub fn factory_reset(&self) -> Result<(), StoreError> {
-        self.clear_config()?;
-        self.remove_optional(ADMIN_PATH)?;
-        self.remove_optional(STATE_PATH)?;
-        for entry in fs::read_dir(self.path(FRAME_DIRECTORY))? {
-            let entry = entry?;
-            if entry.file_type()?.is_file() {
-                fs::remove_file(entry.path())?;
-            }
-        }
-        Ok(())
-    }
-
     pub fn load_state(&self) -> Result<DeviceState, StoreError> {
         let state: DeviceState = match self.read_json_optional(STATE_PATH)? {
             Some(state) => state,
@@ -251,16 +222,6 @@ impl Store {
             return Err(StoreError("unsupported device-state schema".to_owned()));
         }
         self.write_json_atomic(STATE_PATH, state)
-    }
-
-    /// Persist an immutable content-addressed frame before a state file refers
-    /// to it. A power loss may leave an orphan frame, but never a state pointer
-    /// to a partial frame.
-    pub fn save_frame(&self, frame: &Frame) -> Result<Sha256Digest, StoreError> {
-        let digest = frame.sha256();
-        let mut writer = self.begin_frame_write(digest)?;
-        writer.write_all(frame.as_bytes())?;
-        writer.finish()
     }
 
     /// Start an atomic, bounded write for a content-addressed canonical frame.
@@ -333,12 +294,11 @@ impl Store {
         fs::create_dir_all(self.path("config"))?;
         fs::create_dir_all(self.path("state"))?;
         fs::create_dir_all(self.path(FRAME_DIRECTORY))?;
-        fs::create_dir_all(self.path("tls"))?;
         Ok(())
     }
 
     fn remove_abandoned_temporary_files(&self) -> Result<(), StoreError> {
-        for directory in ["config", "state", FRAME_DIRECTORY, "tls"] {
+        for directory in ["config", "state", FRAME_DIRECTORY] {
             for entry in fs::read_dir(self.path(directory))? {
                 let entry = entry?;
                 if entry.file_type()?.is_file()
@@ -370,14 +330,6 @@ impl Store {
     fn write_json_atomic<T: Serialize>(&self, relative: &str, value: &T) -> Result<(), StoreError> {
         let bytes = serde_json::to_vec(value)?;
         write_atomic(&self.path(relative), &bytes)
-    }
-
-    fn remove_optional(&self, relative: &str) -> Result<(), StoreError> {
-        match fs::remove_file(self.path(relative)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
     }
 
     fn quarantine(&self, relative: &str) -> Result<(), StoreError> {
@@ -433,10 +385,6 @@ impl Write for FrameWriter {
 }
 
 impl FrameWriter {
-    pub fn written(&self) -> usize {
-        self.written
-    }
-
     pub fn finish(mut self) -> Result<Sha256Digest, StoreError> {
         if self.written != FRAME_BYTES {
             return Err(StoreError("frame has incorrect length".to_owned()));

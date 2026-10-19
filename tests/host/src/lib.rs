@@ -2,6 +2,8 @@
 pub mod activity;
 #[path = "../../../src/bootstrap_line.rs"]
 pub mod bootstrap_line;
+#[path = "../../../src/bthome.rs"]
+pub mod bthome;
 #[path = "../../../src/clock_face.rs"]
 pub mod clock_face;
 #[path = "../../../src/config.rs"]

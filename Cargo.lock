@@ -1140,7 +1140,6 @@ dependencies = [
  "esp-idf-hal",
  "esp-idf-svc",
  "esp-idf-sys",
- "log",
  "serde",
  "serde_json",
  "sha2",

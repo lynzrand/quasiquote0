@@ -166,7 +166,7 @@ HTTPS uses the ESP-IDF certificate bundle; plain HTTP requires
 - USB power always keeps the device awake, regardless of the legacy
   `stay_awake_on_usb` setting. GPIO0 VBUS detection and USB host-frame
   detection independently prevent sleep. The legacy field is accepted for
-  configuration compatibility and now defaults consistently to true.
+  configuration compatibility and omitted from saved/API configuration.
 - A cold boot or GPIO wake provides a 60-second recovery window; timer
   wakes provide two seconds for USB enumeration. Battery sleep requires
   successful timer and GPIO0-high wake configuration, followed by a final

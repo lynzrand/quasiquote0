@@ -30,7 +30,7 @@ test('image conversion, preview, download and canonical upload in a real browser
     let config = {
       schema: 1, wifi: { ssid: 'test-network', password: '***' },
       pull: { enabled: false, url: '', interval_seconds: 900, timeout_seconds: 15, bearer_token: '', allow_insecure_http: false },
-      display: { status_bar: true }, power: { stay_awake_on_usb: true },
+      display: { status_bar: true },
     };
     const uploads = [], errors = [];
     page.on('pageerror', error => errors.push(error.message));

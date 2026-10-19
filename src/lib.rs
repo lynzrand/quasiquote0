@@ -6,6 +6,7 @@ pub mod battery;
 pub mod bluetooth;
 pub mod bootstrap;
 pub mod bootstrap_line;
+pub mod bthome;
 pub mod clock_face;
 pub mod config;
 pub mod device;

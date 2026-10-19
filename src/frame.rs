@@ -112,9 +112,38 @@ pub fn digest_hex(digest: &Sha256Digest) -> String {
     output
 }
 
+/// Decode an exact SHA-256 hex digest without indexing UTF-8 strings.
+pub fn parse_digest(value: &str) -> Result<Sha256Digest, &'static str> {
+    if value.len() != 64 {
+        return Err("SHA-256 must contain 64 hex digits");
+    }
+    let mut digest = [0; 32];
+    for (slot, pair) in digest.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+        let hex = |byte| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        };
+        *slot = (hex(pair[0]).ok_or("SHA-256 contains a non-hex digit")? << 4)
+            | hex(pair[1]).ok_or("SHA-256 contains a non-hex digit")?;
+    }
+    Ok(digest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn digest_parser_accepts_hex_and_rejects_malformed_or_utf8_input() {
+        let digest = [0xab; 32];
+        assert_eq!(parse_digest(&digest_hex(&digest)).unwrap(), digest);
+        assert_eq!(parse_digest(&"AB".repeat(32)).unwrap(), digest);
+        for bad in ["bad".to_owned(), "g".repeat(64), "é".repeat(32)] {
+            assert!(parse_digest(&bad).is_err());
+        }
+    }
 
     #[test]
     fn frame_is_the_exact_landscape_wire_size() {

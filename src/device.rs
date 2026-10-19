@@ -1,10 +1,9 @@
 //! Durable application state independent of transport and hardware workers.
 
 use crate::config::Config;
-use crate::frame::{digest_hex, Frame, Sha256Digest};
+use crate::frame::{digest_hex, parse_digest, Frame, Sha256Digest};
 use crate::store::{
-    DesiredFrame, DeviceState as PersistentState, FrameMeta, FrameWriter, PullValidators, Store,
-    StoreError,
+    DesiredFrame, DeviceState as PersistentState, FrameWriter, PullValidators, Store, StoreError,
 };
 use core::fmt;
 
@@ -108,41 +107,6 @@ impl Device {
         Ok(())
     }
 
-    pub fn clear_wifi(&mut self) -> Result<(), DeviceError> {
-        let mut config = self.config.clone();
-        config.wifi.ssid.clear();
-        config.wifi.password.clear();
-        config.pull.enabled = false;
-        self.replace_config(config)
-    }
-
-    /// Destructively reset application state while leaving the LittleFS
-    /// filesystem itself and all OTA slots intact.
-    pub fn factory_reset(&mut self) -> Result<(), DeviceError> {
-        self.store.factory_reset()?;
-        self.config = Config::default();
-        self.state = PersistentState::default();
-        Ok(())
-    }
-
-    /// Make a complete, verified frame durable before pointing state at it.
-    pub fn accept_frame(
-        &mut self,
-        frame: &Frame,
-        meta: FrameMeta,
-    ) -> Result<Sha256Digest, DeviceError> {
-        let digest = self.store.save_frame(frame)?;
-        let mut next = self.state.clone();
-        next.desired = Some(DesiredFrame {
-            sha256: digest_hex(&digest),
-            meta,
-        });
-        self.store.save_state(&next)?;
-        self.state = next;
-        self.store.remove_unreferenced_frames(&self.state)?;
-        Ok(digest)
-    }
-
     pub fn begin_frame_write(&self, expected: Sha256Digest) -> Result<FrameWriter, DeviceError> {
         self.store.begin_frame_write(expected).map_err(Into::into)
     }
@@ -155,48 +119,45 @@ impl Device {
 
     /// Point durable state at a frame after its writer has verified and
     /// atomically published the content-addressed file.
-    pub fn commit_frame(
-        &mut self,
-        digest: Sha256Digest,
-        meta: FrameMeta,
-    ) -> Result<(), DeviceError> {
-        let mut next = self.state.clone();
-        next.desired = Some(DesiredFrame {
-            sha256: digest_hex(&digest),
-            meta,
-        });
-        self.store.save_state(&next)?;
-        self.state = next;
-        self.store.remove_unreferenced_frames(&self.state)?;
-        Ok(())
+    pub fn commit_frame(&mut self, digest: Sha256Digest) -> Result<(), DeviceError> {
+        self.publish_frame(digest, None)
     }
 
     pub fn commit_pulled_frame(
         &mut self,
         digest: Sha256Digest,
-        meta: FrameMeta,
-        etag: Option<String>,
-        last_modified: Option<String>,
-        now_ms: u64,
+        validators: PullValidators,
+    ) -> Result<(), DeviceError> {
+        self.publish_frame(digest, Some(validators))
+    }
+
+    fn publish_frame(
+        &mut self,
+        digest: Sha256Digest,
+        validators: Option<PullValidators>,
     ) -> Result<(), DeviceError> {
         let mut next = self.state.clone();
         next.desired = Some(DesiredFrame {
             sha256: digest_hex(&digest),
-            meta,
         });
-        next.pull.etag = etag;
-        next.pull.last_modified = last_modified;
-        next.pull.last_success_ms = Some(now_ms);
-        next.pull.last_error = None;
-        self.store.save_state(&next)?;
-        self.state = next;
-        self.last_pull_error = None;
+        if let Some(validators) = validators {
+            next.pull = validators;
+            self.persist_state(next)?;
+            self.last_pull_error = None;
+        } else {
+            self.persist_state(next)?;
+        }
         self.store.remove_unreferenced_frames(&self.state)?;
         Ok(())
     }
 
-    pub fn record_pull_error(&mut self, error: String) -> Result<(), DeviceError> {
+    pub fn record_pull_error(&mut self, error: String) {
         self.last_pull_error = Some(error.chars().take(160).collect());
+    }
+
+    fn persist_state(&mut self, next: PersistentState) -> Result<(), DeviceError> {
+        self.store.save_state(&next)?;
+        self.state = next;
         Ok(())
     }
 
@@ -210,7 +171,7 @@ impl Device {
         let Some(desired) = &self.state.desired else {
             return Ok(None);
         };
-        let digest = parse_digest(&desired.sha256)?;
+        let digest = parse_digest(&desired.sha256).map_err(|error| DeviceError(error.into()))?;
         self.store.load_frame(&digest).map_err(Into::into)
     }
 
@@ -247,71 +208,24 @@ impl Device {
         self.state
             .desired
             .as_ref()
-            .map(|desired| parse_digest(&desired.sha256))
+            .map(|desired| parse_digest(&desired.sha256).map_err(|error| DeviceError(error.into())))
             .unwrap_or_else(|| Ok(Frame::white().sha256()))
     }
 
-    pub fn invalidate_displayed(&mut self) -> Result<(), DeviceError> {
-        self.state.displayed_content_sha256 = None;
-        self.state.displayed_composed_sha256 = None;
-        self.store.save_state(&self.state)?;
-        Ok(())
-    }
-
-    pub fn mark_ota_pending(&mut self, version: Option<String>) -> Result<(), DeviceError> {
-        self.state.ota_pending = Some(version.unwrap_or_else(|| "pending".to_owned()));
-        self.store.save_state(&self.state)?;
-        Ok(())
+    pub fn mark_ota_pending(&mut self) -> Result<(), DeviceError> {
+        let mut next = self.state.clone();
+        next.ota_pending = Some("pending".to_owned());
+        self.persist_state(next)
     }
 
     #[cfg(target_os = "espidf")]
     pub fn confirm_ota(&mut self) -> Result<(), DeviceError> {
         if self.state.ota_pending.is_some() {
             crate::ota::confirm_running_image().map_err(DeviceError)?;
-            self.state.ota_pending = None;
-            self.store.save_state(&self.state)?;
+            let mut next = self.state.clone();
+            next.ota_pending = None;
+            self.persist_state(next)?;
         }
         Ok(())
-    }
-}
-
-fn parse_digest(value: &str) -> Result<Sha256Digest, DeviceError> {
-    if value.len() != 64 {
-        return Err(DeviceError("stored digest has invalid length".to_owned()));
-    }
-    let mut output = [0; 32];
-    for (slot, chars) in output.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
-        let high =
-            hex(chars[0]).ok_or_else(|| DeviceError("stored digest is not hex".to_owned()))?;
-        let low =
-            hex(chars[1]).ok_or_else(|| DeviceError("stored digest is not hex".to_owned()))?;
-        *slot = high << 4 | low;
-    }
-    Ok(output)
-}
-
-fn hex(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_exact_hex_digests() {
-        let digest = [0xab; 32];
-        assert_eq!(parse_digest(&digest_hex(&digest)).unwrap(), digest);
-    }
-
-    #[test]
-    fn rejects_bad_hex_digests() {
-        assert!(parse_digest("bad").is_err());
-        assert!(parse_digest(&"g".repeat(64)).is_err());
     }
 }
