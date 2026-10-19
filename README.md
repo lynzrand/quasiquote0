@@ -4,7 +4,8 @@ Flashable, cloud-free frame-client firmware for the MindReset Quote/0 board
 (ESP32-C3 driving a UC8251D e-paper panel).
 
 The current management, frame, and durability contracts are documented in
-[`docs/PROTOCOL.md`](docs/PROTOCOL.md). The firmware
+[`docs/PROTOCOL.md`](docs/PROTOCOL.md). Module ownership and persistence rules
+are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The firmware
 owns Wi-Fi pulling, LittleFS persistence, panel refreshes, USB
 configuration, and streamed OTA; servers supply only canonical 296x152
 monochrome frames.
@@ -83,11 +84,10 @@ firmware cannot read or write it. Details and options live in
 
 ## Requirements
 
-- ESP Rust toolchain (`rustup` with `espup`; `rust-toolchain.toml` pins the
-  nightly and `rust-src`)
+- Rustup (`rust-toolchain.toml` pins the nightly and `rust-src` for ESP32-C3)
 - [`ldproxy`](https://crates.io/crates/ldproxy) (ESP-IDF linker frontend)
 - [`espflash`](https://crates.io/crates/espflash) for flashing
-- Python 3 with `pyserial`, only for the host client below
+- Python 3 with `pyserial`, for the USB setup and on-board check tools
 
 ## Building and flashing
 
@@ -107,7 +107,7 @@ formats an erased LittleFS volume on first boot and enters USB-accessible setup.
 | Module | Scope |
 | --- | --- |
 | `wifi` | ESP-IDF Wi-Fi station construction, configuration, and link control |
-| `bluetooth` | NimBLE lifecycle and BTHome v2 advertising |
+| `bluetooth`, `bthome` | NimBLE lifecycle and BTHome v2 telemetry encoding |
 | `usb_serial` | exclusive USB Serial/JTAG transport on GPIO18/19 |
 | `display` | native 152x296, 1bpp UC8251D framebuffer and Quote/0 panel GPIO ownership |
 | `embedded_graphics` | `embedded-graphics` `DrawTarget` over the landscape framebuffer |
@@ -185,13 +185,17 @@ filesystem. The tests use a fresh context and mocked device APIs.
 
 ## Verification
 
-Host checks exercise clock/refresh/power policies, the bounded USB parser,
-exclusive publication, frame integrity, interrupted writes, and persistence:
+Host checks exercise BTHome encoding, clock/refresh/power policies, the bounded
+USB parser, exclusive publication, frame integrity, saved-format compatibility,
+interrupted writes, and persistence:
 
 ```console
 cd /tmp
 cargo +stable test --manifest-path /path/to/quasiquote0/tests/host/Cargo.toml \
   --target x86_64-unknown-linux-gnu --target-dir /path/to/quasiquote0/target/host-tests
+cargo +stable clippy --manifest-path /path/to/quasiquote0/tests/host/Cargo.toml \
+  --target x86_64-unknown-linux-gnu --target-dir /path/to/quasiquote0/target/host-tests \
+  --all-targets -- -D warnings
 ```
 
 Hardware checks have covered setup hotspot provisioning, NTP/HTTPS, OTA in both
