@@ -105,3 +105,41 @@ pub fn fetch(
     }
     Ok(response)
 }
+
+/// The caller owns the publication lease and an already-connected station.
+pub fn update(device: &std::sync::Mutex<crate::device::Device>) -> Result<(), String> {
+    let (config, validators) = device.lock().unwrap().pull_snapshot();
+    device.lock().unwrap().pull_attempts += 1;
+    let mut writer = device
+        .lock()
+        .unwrap()
+        .begin_unannounced_frame_write()
+        .map_err(|e| e.to_string())?;
+    let response = fetch(&config.pull, &validators, &mut writer)?;
+    match response.status {
+        200 => {
+            let digest = writer.finish().map_err(|e| e.to_string())?;
+            if response
+                .announced_sha256
+                .as_deref()
+                .is_some_and(|value| value != crate::frame::digest_hex(&digest))
+            {
+                let _ = device.lock().unwrap().discard_unreferenced_frames();
+                return Err("X-Frame-SHA256 does not match response body".into());
+            }
+            device
+                .lock()
+                .unwrap()
+                .commit_pulled_frame(
+                    digest,
+                    crate::store::PullValidators {
+                        etag: response.etag,
+                        last_modified: response.last_modified,
+                    },
+                )
+                .map_err(|e| e.to_string())
+        }
+        204 | 304 => Ok(()),
+        status => Err(format!("HTTP pull returned status {status}")),
+    }
+}

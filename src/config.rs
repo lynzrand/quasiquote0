@@ -126,10 +126,10 @@ impl Config {
         if self.schema != CONFIG_SCHEMA {
             return Err(ConfigError("unsupported config schema"));
         }
-        if self.wifi.ssid.as_bytes().len() > 32 {
+        if self.wifi.ssid.len() > 32 {
             return Err(ConfigError("wifi.ssid exceeds 32 bytes"));
         }
-        if self.wifi.password.as_bytes().len() > 64 {
+        if self.wifi.password.len() > 64 {
             return Err(ConfigError("wifi.password exceeds 64 bytes"));
         }
         if self.pull.timeout_seconds == 0 {

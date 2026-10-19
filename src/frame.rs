@@ -2,8 +2,8 @@
 //!
 //! The UC8251D controller exposes 152 x 296 portrait RAM, but Quote/0 is
 //! normally viewed as a 296 x 152 landscape display. This type is the single
-//! wire and persistent representation used by USB and HTTP. Projection to the
-//! controller representation happens only at the EPD boundary.
+//! wire and persistent representation used by browser uploads and HTTP pulls.
+//! Projection to controller order happens only at the EPD boundary.
 
 use crate::display::Frame as ControllerFrame;
 use sha2::{Digest, Sha256};
@@ -58,7 +58,7 @@ impl Frame {
     }
 
     pub fn sha256(&self) -> Sha256Digest {
-        Sha256::digest(&self.bytes).into()
+        Sha256::digest(self.bytes.as_slice()).into()
     }
 
     pub fn sha256_hex(&self) -> String {

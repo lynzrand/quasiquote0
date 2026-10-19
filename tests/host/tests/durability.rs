@@ -148,3 +148,29 @@ fn a_corrupted_retained_frame_is_rejected() {
     .unwrap();
     assert!(device.load_desired_frame().is_err());
 }
+
+#[test]
+fn minute_acknowledgement_updates_ram_without_rewriting_flash() {
+    let root = Scratch::new();
+    let mut device = root.device();
+    let content = publish(&mut device, &Frame::white()).unwrap();
+    let first_composed = Frame::white().sha256();
+    device
+        .mark_displayed(&content, &first_composed, "test", 1_800_000_000, true)
+        .unwrap();
+    let state_path = root.0.join("state/device.v1.json");
+    let persisted = fs::read(&state_path).unwrap();
+    // A heartbeat still succeeds if a state write would fail.
+    fs::create_dir(root.0.join("state/device.v1.json.new")).unwrap();
+    let next_composed = Frame::black().sha256();
+    device
+        .mark_displayed(&content, &next_composed, "test", 1_800_000_060, true)
+        .unwrap();
+    assert_eq!(device.display_clock, Some(1_800_000_060));
+    assert_eq!(device.display_refreshes, 2);
+    assert_eq!(
+        device.state().displayed_composed_sha256.as_deref(),
+        Some(Frame::black().sha256_hex().as_str())
+    );
+    assert_eq!(fs::read(state_path).unwrap(), persisted);
+}

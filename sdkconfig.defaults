@@ -19,22 +19,15 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
-# Rust often needs a bit of an extra main task stack size compared to C (the default is 3K)
-# You might have to increase this further if you allocate large stack variables in the main task
-# `run_display_loop` holds a canonical Frame plus its projected
-# ControllerFrame (~11.3 KiB of pixel buffers alone) as locals, and debug
-# builds additionally materialize full-frame temporaries inside
-# `Frame::from_bytes`/`project`. Give the main task real headroom until the
-# pixel paths are moved onto the heap.
+# Renderer composition and projection keep full-frame temporaries on the stack.
+# Hardware measurements approach 56 KiB; retain the verified 64 KiB allocation.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=65536
 
-# Increase a bit these stack sizes as they are also a bit too small by default
+# Stack budgets for ESP-IDF background tasks.
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
 
-# You might have to increase this further if you spawn your own Rust threads
-# that allocate large stack variables; or better yet - use
-# `std::thread::Builder::new().stack_size(XXX)` for spawning
+# Larger application threads explicitly set their stack size when spawned.
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
 
 # Low-rate frame appliance: reserve room for the panel, BLE, and web uploads.
@@ -51,7 +44,7 @@ CONFIG_ESP_WIFI_RX_IRAM_OPT=n
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 
 # The implemented BLE feature is a non-connectable BTHome beacon. Do not
-# reserve scanning, pairing, or GATT connection pools for deferred features.
+# reserve scanning, pairing, or GATT connection pools for unused roles.
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n

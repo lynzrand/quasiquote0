@@ -51,7 +51,7 @@ impl StatusBar {
         if charging {
             return Some(BatteryMarker::Charging);
         }
-        percent.map(|percent| BatteryMarker::Level(((percent.min(100) + 24) / 25) as u8))
+        percent.map(|percent| BatteryMarker::Level(percent.min(100).div_ceil(25) as u8))
     }
 
     /// Replace the whole status region. This makes the producer's reserved

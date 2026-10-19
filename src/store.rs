@@ -184,10 +184,7 @@ impl Store {
     }
 
     pub fn load_state(&self) -> Result<DeviceState, StoreError> {
-        let state: DeviceState = match self.read_json_optional(STATE_PATH)? {
-            Some(state) => state,
-            None => DeviceState::default(),
-        };
+        let state: DeviceState = self.read_json_optional(STATE_PATH)?.unwrap_or_default();
         if state.schema != state_schema() {
             return Err(StoreError("unsupported device-state schema".to_owned()));
         }

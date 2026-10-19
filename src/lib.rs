@@ -2,6 +2,7 @@
 
 pub mod activity;
 pub mod app;
+pub mod appliance;
 pub mod battery;
 pub mod bluetooth;
 pub mod bootstrap;
