@@ -138,3 +138,79 @@ test('image conversion, preview, download and canonical upload in a real browser
       await browser.close();
     }
   });
+
+test('portable backup download and confirmed import in a real browser',
+  { skip: !cdp && 'Set QUOTE0_CDP_URL to an isolated browser debugging endpoint' }, async () => {
+    const browser = await chromium.connectOverCDP(cdp);
+    const context = await browser.newContext({ acceptDownloads: true });
+    const page = await context.newPage();
+    const image = Buffer.alloc(5624, 255);
+    const backup = {
+      schema: 1,
+      config: {
+        schema: 1, wifi: { ssid: 'backup-test', password: 'wifi-backup-test-secret' },
+        pull: { enabled: false, url: '', interval_seconds: 900, timeout_seconds: 15,
+          bearer_token: 'pull-backup-test-secret', allow_insecure_http: false },
+        display: { status_bar: true },
+      },
+      frame: { sha256: createHash('sha256').update(image).digest('hex'), hex: image.toString('hex') },
+    };
+    const imported = [], errors = [];
+    const html = await readFile(new URL('../src/web/embedded.html', import.meta.url), 'utf8');
+    page.on('pageerror', error => errors.push(error.message));
+    await page.addInitScript(() => {
+      const create = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = blob => { window.backupBlob = blob; return create(blob); };
+    });
+    await page.route('**/*', async route => {
+      const request = route.request(), url = new URL(request.url());
+      assert.equal(url.hostname, 'quote0.test');
+      if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: html });
+      assert.equal(request.headers()['x-device-token'], 'backup-browser-token');
+      let value;
+      if (url.pathname === '/api/status') {
+        value = { device: 'Quote0-test', network: { mode: 'station' }, clock: { time: '12:34' }, battery: { percent: 70 } };
+      } else if (url.pathname === '/api/config') {
+        value = { config: { ...backup.config, wifi: { ssid: 'backup-test', password: '***' } } };
+      } else if (url.pathname === '/api/backup' && request.method() === 'GET') {
+        value = backup;
+      } else if (url.pathname === '/api/backup' && request.method() === 'POST') {
+        if (request.postData() === '{') {
+          return route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'Invalid backup' }) });
+        }
+        imported.push(request.postDataJSON());
+        value = { accepted: true, rebooting: true };
+      } else throw Error('Unexpected request ' + url.pathname);
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
+    });
+    try {
+      await page.goto('http://quote0.test/#token=backup-browser-token');
+      await page.waitForFunction(() => document.getElementById('message').textContent === 'Connected');
+      const download = page.waitForEvent('download');
+      await page.locator('#exportBackup').click();
+      assert.match((await download).suggestedFilename(), /^quote0-backup-\d{4}-\d{2}-\d{2}\.json$/);
+      const exported = await page.evaluate(async () => JSON.parse(await window.backupBlob.text()));
+      assert.deepEqual(exported, backup, 'export preserves credentials and original frame');
+      await page.locator('#importBackup').click();
+      await page.waitForFunction(() => document.getElementById('message').textContent === 'Choose a backup file');
+      await page.locator('#backup').setInputFiles({ name: 'oversize.json', mimeType: 'application/json', buffer: Buffer.alloc(16385) });
+      await page.locator('#importBackup').click();
+      await page.waitForFunction(() => document.getElementById('message').textContent.includes('16 KiB'));
+      const file = { name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) };
+      await page.locator('#backup').setInputFiles(file);
+      page.once('dialog', dialog => dialog.dismiss());
+      await page.locator('#importBackup').click();
+      assert.equal(imported.length, 0);
+      await page.locator('#backup').setInputFiles({ ...file, buffer: Buffer.from('{') });
+      page.once('dialog', dialog => dialog.accept());
+      await page.locator('#importBackup').click();
+      await page.waitForFunction(() => document.getElementById('message').textContent === 'Invalid backup');
+      await page.locator('#backup').setInputFiles(file);
+      page.once('dialog', dialog => dialog.accept());
+      await page.locator('#importBackup').click();
+      await page.waitForFunction(() => document.getElementById('message').textContent.includes('Backup accepted'));
+      assert.deepEqual(imported, [backup]);
+      assert.deepEqual(errors, []);
+      console.log('Backup JSON, credentials, image bytes, download, size guard, cancellation, rejection and confirmed restore passed.');
+    } finally { await context.close(); await browser.close(); }
+  });

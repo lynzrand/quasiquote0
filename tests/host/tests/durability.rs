@@ -1,3 +1,4 @@
+use quasiquote0_host_tests::backup::{Backup, FrameBackup, SCHEMA};
 use quasiquote0_host_tests::{device::Device, frame::Frame, frame::Sha256Digest};
 use std::{
     fs,
@@ -236,4 +237,105 @@ fn validators_follow_the_pull_resource_and_credential_context() {
     assert_eq!(device.pull_snapshot().1, Default::default());
     drop(device);
     assert_eq!(root.device().pull_snapshot().1, Default::default());
+}
+
+fn backup() -> Backup {
+    let mut config = quasiquote0_host_tests::config::Config::default();
+    config.wifi.ssid = "restored-network".into();
+    config.wifi.password = "restored-password".into();
+    config.pull.bearer_token = "restored-pull-token".into();
+    Backup {
+        schema: SCHEMA,
+        config,
+        frame: Some(FrameBackup {
+            sha256: Frame::black().sha256_hex(),
+            bytes: vec![0; 5624],
+        }),
+    }
+}
+
+#[test]
+fn restore_replays_settings_credentials_and_image_together_after_reset() {
+    let root = Scratch::new();
+    let mut device = root.device();
+    publish(&mut device, &Frame::white()).unwrap();
+    device.save_admin_token("destination-access-code").unwrap();
+    let backup = backup();
+    let new_config = backup.config.clone();
+    device.stage_restore(backup).unwrap();
+    // A staged restore does not expose half-applied state in the running app.
+    assert_eq!(device.config().wifi.ssid, "");
+    assert_eq!(
+        device.load_desired_frame().unwrap().unwrap().as_bytes(),
+        Frame::white().as_bytes()
+    );
+    drop(device);
+    // Simulate a reset after boot wrote the settings but before writing state.
+    fs::write(
+        root.0.join("config/device.v1.json"),
+        serde_json::to_vec(&new_config).unwrap(),
+    )
+    .unwrap();
+    let device = root.device();
+    assert_eq!(device.config(), &new_config);
+    assert_eq!(device.config().wifi.password, "restored-password");
+    assert_eq!(device.config().pull.bearer_token, "restored-pull-token");
+    assert_eq!(
+        device.admin_token().unwrap().as_deref(),
+        Some("destination-access-code")
+    );
+    assert_eq!(
+        device.load_desired_frame().unwrap().unwrap().as_bytes(),
+        Frame::black().as_bytes()
+    );
+    assert!(!root.0.join("state/restore.v1.json").exists());
+    assert_eq!(device.pull_snapshot().1, Default::default());
+}
+
+#[test]
+fn invalid_backup_leaves_settings_and_image_untouched() {
+    let root = Scratch::new();
+    let mut device = root.device();
+    let old = publish(&mut device, &Frame::white()).unwrap();
+    let mut invalid = backup();
+    invalid.frame.as_mut().unwrap().sha256 = Frame::white().sha256_hex();
+    assert!(device
+        .stage_restore(invalid)
+        .unwrap_err()
+        .to_string()
+        .contains("digest"));
+    assert!(!root.0.join("state/restore.v1.json").exists());
+    drop(device);
+    let device = root.device();
+    assert_eq!(device.desired_digest().unwrap(), old);
+    assert_eq!(device.config().wifi.ssid, "");
+}
+
+#[test]
+fn failure_to_commit_restore_keeps_the_previous_setup() {
+    let root = Scratch::new();
+    let mut device = root.device();
+    let old = publish(&mut device, &Frame::white()).unwrap();
+    fs::create_dir(root.0.join("state/restore.v1.json.new")).unwrap();
+    assert!(device.stage_restore(backup()).is_err());
+    drop(device);
+    let device = root.device();
+    assert_eq!(device.desired_digest().unwrap(), old);
+    assert_eq!(device.config().wifi.ssid, "");
+    assert_eq!(fs::read_dir(root.0.join("frames")).unwrap().count(), 1);
+}
+
+#[test]
+fn restoring_a_backup_without_an_image_clears_retained_content() {
+    let root = Scratch::new();
+    let mut device = root.device();
+    publish(&mut device, &Frame::white()).unwrap();
+    let mut backup = backup();
+    backup.frame = None;
+    device.stage_restore(backup).unwrap();
+    drop(device);
+    let device = root.device();
+    assert!(device.state().desired.is_none());
+    assert!(device.backup_frame().unwrap().is_none());
+    assert_eq!(fs::read_dir(root.0.join("frames")).unwrap().count(), 0);
 }

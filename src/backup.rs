@@ -150,3 +150,67 @@ mod hex_frame {
         Ok(bytes)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame::Frame;
+
+    #[test]
+    fn json_round_trip_preserves_credentials_and_image_bytes() {
+        let mut config = Config::default();
+        config.wifi.password = "backup-test-password".into();
+        config.pull.bearer_token = "backup-test-token".into();
+        let backup = Backup {
+            schema: SCHEMA,
+            config,
+            frame: Some(FrameBackup {
+                sha256: Frame::white().sha256_hex(),
+                bytes: vec![0xff; FRAME_BYTES],
+            }),
+        };
+        let json = serde_json::to_vec(&backup).unwrap();
+        assert!(json.len() <= MAX_BYTES);
+        let restored: Backup = serde_json::from_slice(&json).unwrap();
+        restored.validate().unwrap();
+        assert_eq!(restored.config, backup.config);
+        assert_eq!(restored.frame.unwrap().bytes, vec![0xff; FRAME_BYTES]);
+    }
+
+    #[test]
+    fn invalid_backup_data_is_rejected_before_publication() {
+        let mut backup = Backup {
+            schema: SCHEMA,
+            config: Config::default(),
+            frame: Some(FrameBackup {
+                sha256: Frame::white().sha256_hex(),
+                bytes: vec![0xff; FRAME_BYTES],
+            }),
+        };
+        assert!(backup.validate().is_ok());
+        backup.schema = 2;
+        assert_eq!(backup.validate().unwrap_err(), "Unsupported backup schema");
+        backup.schema = SCHEMA;
+        backup.frame.as_mut().unwrap().bytes.fill(0);
+        assert!(backup.validate().unwrap_err().contains("digest"));
+        backup.frame.as_mut().unwrap().bytes.pop();
+        assert!(backup.validate().unwrap_err().contains("5624"));
+    }
+
+    #[test]
+    fn malformed_large_fields_are_rejected_before_allocating_copies() {
+        // On-board review caught OOM when serde copied an overlong hex string.
+        let mut value = serde_json::json!({"schema":1,"config":{},"frame":{
+            "sha256":Frame::white().sha256_hex(),"hex":"f".repeat(15000)
+        }});
+        let parse = |value: &serde_json::Value| {
+            serde_json::from_slice::<Backup>(&serde_json::to_vec(value).unwrap())
+        };
+        assert!(parse(&value).err().unwrap().to_string().contains("5624"));
+        value["frame"]["hex"] = serde_json::json!("é".repeat(FRAME_BYTES));
+        assert!(parse(&value).err().unwrap().to_string().contains("not hex"));
+        value["frame"] = serde_json::Value::Null;
+        value["config"] = serde_json::json!({"pull":{"bearer_token":"x".repeat(15000)}});
+        assert!(parse(&value).err().unwrap().to_string().contains("4096"));
+    }
+}
