@@ -497,7 +497,7 @@ fn partition_is_erased() -> Result<bool, StoreError> {
 /// An erased superblock alone does not make a LittleFS volume blank: its
 /// redundant metadata can still mount. Formatting requires an entirely erased
 /// partition, and read failures must propagate rather than authorize a format.
-#[cfg(target_os = "espidf")]
+#[cfg(any(target_os = "espidf", test))]
 fn is_erased(
     length: usize,
     mut read: impl FnMut(usize, &mut [u8]) -> Result<(), StoreError>,
@@ -520,4 +520,41 @@ fn esp_error(error: esp_idf_sys::EspError) -> StoreError {
 
 const fn state_schema() -> u32 {
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blank_detection_checks_beyond_the_first_erased_superblock() {
+        // Review reproduced a mountable LittleFS volume with block 0 erased.
+        // The old 64-byte probe would format it and lose its retained file.
+        let mut bytes = vec![0xff; 8193];
+        let check = |bytes: &[u8]| {
+            is_erased(bytes.len(), |offset, out| {
+                out.copy_from_slice(&bytes[offset..offset + out.len()]);
+                Ok(())
+            })
+            .unwrap()
+        };
+        assert!(check(&bytes));
+        bytes[8192] = 0;
+        assert!(!check(&bytes));
+        bytes[8192] = 0xff;
+        bytes[4096] = 0;
+        assert!(!check(&bytes));
+    }
+
+    #[test]
+    fn an_unreadable_partition_is_not_treated_as_blank() {
+        let result = is_erased(1024, |offset, bytes| {
+            if offset == 512 {
+                return Err(StoreError("flash read failed".into()));
+            }
+            bytes.fill(0xff);
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err().to_string(), "flash read failed");
+    }
 }

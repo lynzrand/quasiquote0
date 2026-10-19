@@ -150,6 +150,35 @@ fn a_corrupted_retained_frame_is_rejected() {
 }
 
 #[test]
+fn reuploading_the_original_frame_repairs_corrupted_content() {
+    // Review reproduced a successful upload that kept the corrupt file because
+    // its content-addressed filename already existed.
+    for corrupt in [Frame::black().as_bytes().to_vec(), vec![0; 64]] {
+        let root = Scratch::new();
+        let mut device = root.device();
+        let frame = Frame::white();
+        let digest = publish(&mut device, &frame).unwrap();
+        let path = root.0.join(format!("frames/{}.bin", frame.sha256_hex()));
+        fs::write(path, corrupt).unwrap();
+        assert!(device.load_desired_frame().is_err());
+        assert_eq!(publish(&mut device, &frame).unwrap(), digest);
+        assert_eq!(
+            device.load_desired_frame().unwrap().unwrap().as_bytes(),
+            frame.as_bytes()
+        );
+        drop(device);
+        assert_eq!(
+            root.device()
+                .load_desired_frame()
+                .unwrap()
+                .unwrap()
+                .as_bytes(),
+            frame.as_bytes()
+        );
+    }
+}
+
+#[test]
 fn minute_acknowledgement_updates_ram_without_rewriting_flash() {
     let root = Scratch::new();
     let mut device = root.device();
@@ -173,4 +202,38 @@ fn minute_acknowledgement_updates_ram_without_rewriting_flash() {
         Some(Frame::black().sha256_hex().as_str())
     );
     assert_eq!(fs::read(state_path).unwrap(), persisted);
+}
+
+#[test]
+fn validators_follow_the_pull_resource_and_credential_context() {
+    // Review reproduced sending the previous endpoint's ETag to a new URL,
+    // allowing an unrelated 304 to keep the wrong image indefinitely.
+    let root = Scratch::new();
+    let mut device = root.device();
+    let mut config = device.config().clone();
+    config.wifi.ssid = "test".into();
+    config.pull.enabled = true;
+    config.pull.url = "https://example.test/first.bin".into();
+    config.pull.bearer_token = "first-token".into();
+    device.replace_config(config.clone()).unwrap();
+    let digest = publish(&mut device, &Frame::white()).unwrap();
+    let validators = quasiquote0_host_tests::store::PullValidators {
+        etag: Some("\"1\"".into()),
+        last_modified: Some("yesterday".into()),
+    };
+    device
+        .commit_pulled_frame(digest, validators.clone())
+        .unwrap();
+    config.display.status_bar = false;
+    device.replace_config(config.clone()).unwrap();
+    assert_eq!(device.pull_snapshot().1, validators);
+    config.pull.url = "https://example.test/second.bin".into();
+    device.replace_config(config.clone()).unwrap();
+    assert_eq!(device.pull_snapshot().1, Default::default());
+    device.commit_pulled_frame(digest, validators).unwrap();
+    config.pull.bearer_token = "second-token".into();
+    device.replace_config(config).unwrap();
+    assert_eq!(device.pull_snapshot().1, Default::default());
+    drop(device);
+    assert_eq!(root.device().pull_snapshot().1, Default::default());
 }
