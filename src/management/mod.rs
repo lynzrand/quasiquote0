@@ -1,8 +1,9 @@
 //! Browser routes use ordinary HTTP and one exclusive mutation/transfer lease.
+mod backups;
 mod body;
 mod uploads;
 
-use crate::{activity::OPERATIONS, app::App, config::Config};
+use crate::{app::App, config::Config};
 use body::Body;
 use embedded_svc::http::{server::Request, Method};
 use esp_idf_hal::io::Write as EmbeddedWrite;
@@ -54,6 +55,8 @@ pub fn start(app: Arc<App>) -> Result<EspHttpServer<'static>, EspIOError> {
         ("/api/firmware", Method::Put, Action::Firmware),
         ("/api/reboot", Method::Post, Action::Reboot),
         ("/api/pull", Method::Post, Action::Pull),
+        ("/api/backup", Method::Get, Action::BackupGet),
+        ("/api/backup", Method::Post, Action::BackupRestore),
     ] {
         let app = app.clone();
         server.fn_handler(path, method, move |request| handle(request, &app, action))?;
@@ -69,6 +72,8 @@ enum Action {
     Firmware,
     Reboot,
     Pull,
+    BackupGet,
+    BackupRestore,
 }
 fn handle(request: HttpRequest<'_, '_>, app: &App, action: Action) -> HttpResult {
     if !app.usb_powered() {
@@ -88,17 +93,16 @@ fn handle(request: HttpRequest<'_, '_>, app: &App, action: Action) -> HttpResult
     // Configuration takes its lease inside App, after reading the bounded body.
     let _operation = if matches!(
         action,
-        Action::Frame | Action::Firmware | Action::Reboot | Action::Pull
+        Action::Frame
+            | Action::Firmware
+            | Action::Reboot
+            | Action::Pull
+            | Action::BackupGet
+            | Action::BackupRestore
     ) {
-        match OPERATIONS.try_acquire() {
-            Some(operation) => Some(operation),
-            None => {
-                return reply(
-                    request,
-                    409,
-                    json!({"error":"Another operation is in progress"}),
-                )
-            }
+        match app.begin_operation() {
+            Ok(operation) => Some(operation),
+            Err(error) => return reply(request, 409, json!({"error":error})),
         }
     } else {
         None
@@ -109,6 +113,8 @@ fn handle(request: HttpRequest<'_, '_>, app: &App, action: Action) -> HttpResult
         Action::ConfigSet => save_config(request, app),
         Action::Frame => uploads::handle(request, app, uploads::Upload::Frame),
         Action::Firmware => uploads::handle(request, app, uploads::Upload::Firmware),
+        Action::BackupGet => backups::export(request, app),
+        Action::BackupRestore => backups::restore(request, app),
         Action::Reboot => {
             reply(request, 200, json!({"rebooting":true}))?;
             app.reboot_requested.store(true, Ordering::Release);

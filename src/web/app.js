@@ -106,4 +106,24 @@ $('sendFirmware').onclick = () => run(async () => {
   await sendBytes('firmware', await file.arrayBuffer());
   message('Update verified. Restarting…');
 });
+$('exportBackup').onclick = () => run(async () => {
+  const backup = await api('backup');
+  const url = URL.createObjectURL(new Blob([JSON.stringify(backup)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `quote0-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  message('Backup downloaded.');
+});
+$('importBackup').onclick = () => run(async () => {
+  const file = $('backup').files[0];
+  if (!file) throw Error('Choose a backup file');
+  if (file.size === 0 || file.size > 16384) throw Error('Backup must be between 1 byte and 16 KiB');
+  if (!confirm('Replace the saved settings and image with this backup? The device will restart.')) return;
+  message('Restoring backup…');
+  await api('backup', 'POST', file, { 'Content-Type': 'application/json' });
+  config = null;
+  message('Backup accepted. Restarting. Use USB setup to find the address if Wi-Fi changed.');
+});
 if ($('access').value) run(load);

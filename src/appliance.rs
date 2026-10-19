@@ -140,7 +140,7 @@ impl<'d> Appliance<'d> {
         if !link.ready || link.time_waiting {
             return;
         }
-        let Some(_operation) = OPERATIONS.try_acquire() else {
+        let Ok(_operation) = self.app.begin_operation() else {
             return;
         };
         // Consume before work so a later request remains pending.

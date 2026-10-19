@@ -96,6 +96,15 @@
 <button id="sendFrame" type="button" disabled>Upload to display</button>
 </section>
 <section>
+<h2>Backup and restore</h2>
+<p>Save settings, Wi-Fi passwords, pull tokens, and the original image in one file. Store the backup privately.</p>
+<button id="exportBackup" type="button">Export backup</button>
+<label for="backup">Backup file</label>
+<input id="backup" type="file" accept="application/json,.json">
+<button id="importBackup" type="button">Import backup</button>
+<small>Import replaces the settings and image, then restarts the device. The destination device keeps its access code.</small>
+</section>
+<section>
 <h2>Firmware update</h2>
 <p>Upload an application .bin image. Keep USB connected until the device restarts.</p>
 <input id="firmware" type="file" accept=".bin">

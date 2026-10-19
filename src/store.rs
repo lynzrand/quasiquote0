@@ -6,7 +6,7 @@
 //! to recovery code and is never reformatted automatically.
 
 use crate::config::Config;
-use crate::frame::{digest_hex, Frame, Sha256Digest, FRAME_BYTES};
+use crate::frame::{digest_hex, parse_digest, Frame, Sha256Digest, FRAME_BYTES};
 use core::fmt;
 #[cfg(target_os = "espidf")]
 use esp_idf_svc::{fs::littlefs::Littlefs, io::vfs::MountedLittlefs};
@@ -24,6 +24,7 @@ pub const PARTITION_LABEL: &str = "littlefs";
 const CONFIG_PATH: &str = "config/device.v1.json";
 const ADMIN_PATH: &str = "config/admin.v1.json";
 const STATE_PATH: &str = "state/device.v1.json";
+const RESTORE_PATH: &str = "state/restore.v1.json";
 const FRAME_DIRECTORY: &str = "frames";
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -35,6 +36,13 @@ pub struct DesiredFrame {
 pub struct PullValidators {
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Restore {
+    config: Config,
+    state: DeviceState,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -133,6 +141,7 @@ impl Store {
         };
         store.ensure_layout()?;
         store.remove_abandoned_temporary_files()?;
+        store.recover_restore()?;
         Ok(store)
     }
 
@@ -141,6 +150,7 @@ impl Store {
         let store = Self { root };
         store.ensure_layout()?;
         store.remove_abandoned_temporary_files()?;
+        store.recover_restore()?;
         Ok(store)
     }
 
@@ -219,6 +229,37 @@ impl Store {
             return Err(StoreError("unsupported device-state schema".to_owned()));
         }
         self.write_json_atomic(STATE_PATH, state)
+    }
+
+    /// The journal is the restore commit point. Keep it until both documents
+    /// have been applied at boot, so a reset between their writes is replayable.
+    pub(crate) fn stage_restore(
+        &self,
+        config: Config,
+        state: DeviceState,
+    ) -> Result<(), StoreError> {
+        self.write_json_atomic(RESTORE_PATH, &Restore { config, state })
+    }
+
+    fn recover_restore(&self) -> Result<(), StoreError> {
+        let Some(restore): Option<Restore> = self.read_json_optional(RESTORE_PATH)? else {
+            return Ok(());
+        };
+        restore
+            .config
+            .validate()
+            .map_err(|error| StoreError(error.to_string()))?;
+        if restore.state.schema != state_schema() {
+            return Err(StoreError("unsupported restore state schema".into()));
+        }
+        if let Some(desired) = &restore.state.desired {
+            let digest = parse_digest(&desired.sha256).map_err(|error| StoreError(error.into()))?;
+            self.open_verified_frame(&digest)?;
+        }
+        self.save_config(&restore.config)?;
+        self.save_state(&restore.state)?;
+        fs::remove_file(self.path(RESTORE_PATH))?;
+        Ok(())
     }
 
     /// Start an atomic, bounded write for a content-addressed canonical frame.

@@ -1,6 +1,10 @@
 //! Shared application state and serialized configuration mutations.
 mod status;
-use crate::{activity::OPERATIONS, config::Config, device::Device};
+use crate::{
+    activity::{Operation, OPERATIONS},
+    config::Config,
+    device::Device,
+};
 use serde::Serialize;
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, Ordering},
@@ -100,9 +104,7 @@ impl App {
             .unwrap_or_default()
     }
     pub fn replace_config(&self, mut config: Config) -> Result<(), String> {
-        let _operation = OPERATIONS
-            .try_acquire()
-            .ok_or("Another operation is in progress")?;
+        let _operation = self.begin_operation()?;
         let mut device = self
             .device
             .as_ref()
@@ -117,9 +119,7 @@ impl App {
     }
     pub fn set_wifi(&self, ssid: String, password: String) -> Result<(), String> {
         // Acquire before reading the previous configuration to avoid lost edits.
-        let _operation = OPERATIONS
-            .try_acquire()
-            .ok_or("Another operation is in progress")?;
+        let _operation = self.begin_operation()?;
         let mut device = self
             .device
             .as_ref()
@@ -133,6 +133,18 @@ impl App {
             config.pull.enabled = false;
         }
         self.save_config(&mut device, config)
+    }
+
+    /// Once an OTA or restore has committed, leave its settings untouched until
+    /// restart. Checking under the lease closes the reply-to-reboot window.
+    pub fn begin_operation(&self) -> Result<Operation<'static>, String> {
+        let operation = OPERATIONS
+            .try_acquire()
+            .ok_or("Another operation is in progress")?;
+        if self.reboot_requested.load(Ordering::Acquire) {
+            return Err("The device is restarting".into());
+        }
+        Ok(operation)
     }
 
     fn save_config(&self, device: &mut Device, config: Config) -> Result<(), String> {

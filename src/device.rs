@@ -1,11 +1,13 @@
 //! Durable application state independent of transport and hardware workers.
 
+use crate::backup::{Backup, RetainedFrame};
 use crate::config::Config;
 use crate::frame::{digest_hex, parse_digest, Frame, Sha256Digest};
 use crate::store::{
     DesiredFrame, DeviceState as PersistentState, FrameWriter, PullValidators, Store, StoreError,
 };
 use core::fmt;
+use std::io::Write;
 
 pub struct Device {
     store: Store,
@@ -96,6 +98,43 @@ impl Device {
     }
     pub fn save_admin_token(&self, token: &str) -> Result<(), DeviceError> {
         self.store.save_admin_token(token).map_err(Into::into)
+    }
+
+    pub fn backup_frame(&self) -> Result<Option<RetainedFrame>, DeviceError> {
+        if self.state.desired.is_none() {
+            return Ok(None);
+        }
+        let digest = self.desired_digest()?;
+        let file = self.store.open_verified_frame(&digest)?;
+        Ok(Some(RetainedFrame { digest, file }))
+    }
+
+    /// Validate and stage both settings and content for replay on the next
+    /// boot. The caller holds the operation lease and restarts after replying.
+    pub fn stage_restore(&self, backup: Backup) -> Result<(), DeviceError> {
+        if self.state.ota_pending.is_some() {
+            return Err(DeviceError(
+                "Wait for firmware startup checks before importing a backup".into(),
+            ));
+        }
+        backup.validate().map_err(DeviceError)?;
+        let mut next = self.state.clone();
+        next.desired = if let Some(frame) = backup.frame {
+            let expected =
+                parse_digest(&frame.sha256).map_err(|error| DeviceError(error.into()))?;
+            let mut writer = self.store.begin_frame_write(expected)?;
+            writer
+                .write_all(&frame.bytes)
+                .map_err(|error| DeviceError(error.to_string()))?;
+            Some(DesiredFrame {
+                sha256: digest_hex(&writer.finish()?),
+            })
+        } else {
+            None
+        };
+        next.pull = PullValidators::default();
+        self.store.stage_restore(backup.config, next)?;
+        Ok(())
     }
 
     pub fn replace_config(&mut self, config: Config) -> Result<(), DeviceError> {

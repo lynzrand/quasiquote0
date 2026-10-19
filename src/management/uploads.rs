@@ -62,11 +62,10 @@ pub(super) fn handle(mut request: HttpRequest<'_, '_>, app: &App, upload: Upload
                 Upload::Frame => json!({"accepted":true,"sha256":frame::digest_hex(&digest)}),
                 Upload::Firmware => json!({"accepted":true,"rebooting":true}),
             };
-            reply(request, 200, value)?;
             if matches!(upload, Upload::Firmware) {
                 app.reboot_requested.store(true, Ordering::Release);
             }
-            Ok(())
+            reply(request, 200, value)
         }
         Err(error) => reply(request, 400, json!({"error":error})),
     }
