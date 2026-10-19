@@ -12,7 +12,8 @@ There are no per-upload workers or general-purpose remote procedure calls.
 | `appliance.rs` | Owner loop, browser lifecycle, pull scheduling, boot confirmation, sleep |
 | `appliance/render.rs` | Frame composition, refresh budget, panel transfer, acknowledgement |
 | `app/` | Shared state, configuration mutations, management status snapshots |
-| `management/` | Authenticated HTTP routing, bounded body reads, frame and OTA uploads |
+| `management/` | Authenticated HTTP routing, bounded body reads, uploads, backup and restore |
+| `backup.rs` | Portable backup schema, validation, and bounded image decoding |
 | `bootstrap.rs`, `bootstrap_line.rs`, `usb_serial.rs` | Physical USB setup/status and bounded parsing |
 | `device.rs`, `store.rs` | Durable configuration, frame publication, display acknowledgement |
 | `network.rs`, `network_policy.rs`, `wifi.rs` | USB station/setup mode, battery pull windows, NTP, radio mechanics |
@@ -38,6 +39,17 @@ and SHA-256, and publishes an immutable content-addressed file. The state file
 is atomically replaced before RAM points to the new frame. Unreferenced frames
 are collected after publication and at startup. Interrupted uploads leave the
 previous desired frame available.
+
+Restore stages its validated settings and desired image in one durable journal.
+The device restarts after accepting it; startup applies both documents before
+loading configuration or collecting frames. If applying either document fails,
+the journal remains for replay. The destination's access code is retained.
+
+Only an entirely erased filesystem partition may be formatted automatically.
+An erased first superblock is insufficient: LittleFS may still recover through
+its redundant metadata. Existing content-addressed files are verified before
+deduplication, so uploading the original bytes repairs a corrupt file. Changing
+a pull URL or bearer token clears validators before saving the new source.
 
 The retained source frame excludes device overlays. Each refresh composes the
 status strip from that source. Content, layout, and firmware transitions persist
@@ -79,7 +91,8 @@ their existing format. Cleanup requires no erase or reprovisioning.
 `tests/host` compiles the production policy, frame, encoding, and persistence
 modules for the host. Durability tests cover failed state/OTA writes, interrupted
 or corrupt frames, old saved documents, and flash-free minute acknowledgements.
-See the README for build, lint, and browser test commands. The real-browser test
+See [CONTRIBUTING.md](../CONTRIBUTING.md#verification) for build, lint, and browser
+test commands. The real-browser test
 uses mocked device APIs and an isolated browser context; on-board checks in
 `tools/check_browser.py` exercise authentication, redacted settings, malformed
 and interrupted uploads, and optional explicit frame/firmware files.

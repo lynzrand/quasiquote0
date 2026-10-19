@@ -82,6 +82,8 @@ storage. This is a local HTTP service; use it on a trusted network.
 | PUT | `/api/firmware` | Stream an application image into the inactive OTA slot |
 | POST | `/api/pull` | Schedule an immediate pull when pulling is enabled |
 | POST | `/api/reboot` | Reply, then restart the device |
+| GET | `/api/backup` | Download settings, credentials, and the retained image |
+| POST | `/api/backup` | Validate and stage a backup, then restart to apply it |
 
 Frame/firmware requests require `Content-Length` and `X-Content-SHA256` (64
 lowercase hex digits). Firmware length is nonzero and no more than 1,966,080
@@ -111,6 +113,32 @@ is selected after persisting the pending marker. The next boot confirms the
 image after storage and USB task initialization, a successful panel refresh,
 and ten seconds of owner-loop progress through radio/server startup; the installed
 bootloader must support rollback. This does not establish full radio health.
+
+### Backup and restore
+
+The authenticated, USB-powered backup routes use JSON up to 16 KiB. A backup
+contains `schema: 1`, a full unredacted `config`, and `frame`. The frame is
+either `null` (no retained image) or an object with `sha256` and `hex`: exactly
+5,624 source bytes encoded as 11,248 hex characters. Device overlays are not
+included. Serialized settings are limited to 4,096 bytes, keeping a complete
+backup within the import limit and the server's memory budget.
+
+Unlike `/api/config`, export includes Wi-Fi passwords and pull bearer tokens.
+Store the file privately. Device access codes remain local to each destination
+and are not exported or overwritten. Export sets `Cache-Control: no-store` and
+an attachment filename; it streams the image without allocating a complete frame.
+
+Import checks the schema, settings, byte count, hex encoding, and image hash
+before staging any restore. A null frame clears retained content. A durable
+restore journal commits the settings and desired image together; startup replays
+it before loading state or collecting unused frames. A reset between applying
+the settings and image state repeats the restore. Invalid input leaves the
+current setup intact. Pull validators are cleared for the restored source.
+
+Successful import replies `{"accepted":true,"rebooting":true}`. Mutations are
+blocked once restart is pending, even if the HTTP client disconnects before
+reading its reply. Import waits until pending OTA startup checks are complete.
+This format backs up application settings/content, not firmware or raw flash.
 
 ### Time
 
