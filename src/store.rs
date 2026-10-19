@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 #[cfg(target_os = "espidf")]
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 pub const MOUNT_PATH: &str = "/littlefs";
@@ -244,7 +244,7 @@ impl Store {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        let file = if final_path.as_ref().is_some_and(|path| path.exists()) {
+        let file = if expected.is_some_and(|digest| self.open_verified_frame(&digest).is_ok()) {
             None
         } else {
             Some(
@@ -269,14 +269,36 @@ impl Store {
         if !path.exists() {
             return Ok(None);
         }
-        let mut bytes = Vec::new();
-        File::open(path)?.read_to_end(&mut bytes)?;
+        let mut file = self.open_verified_frame(digest)?;
+        let mut bytes = vec![0; FRAME_BYTES];
+        file.read_exact(&mut bytes)?;
         let frame = Frame::from_bytes(&bytes)
             .map_err(|_| StoreError("stored frame has invalid length".to_owned()))?;
-        if frame.sha256() != *digest {
-            return Err(StoreError("stored frame digest does not match".to_owned()));
-        }
         Ok(Some(frame))
+    }
+
+    /// Verify stored bytes before deduplication or streaming them to a backup.
+    /// A matching filename alone is not proof of intact content.
+    pub(crate) fn open_verified_frame(&self, digest: &Sha256Digest) -> Result<File, StoreError> {
+        let mut file = File::open(self.frame_path(digest))?;
+        if file.metadata()?.len() != FRAME_BYTES as u64 {
+            return Err(StoreError("stored frame has invalid length".into()));
+        }
+        let mut hasher = Sha256::new();
+        let mut buffer = [0; 512];
+        loop {
+            let count = file.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+        }
+        let actual: Sha256Digest = hasher.finalize().into();
+        if actual != *digest {
+            return Err(StoreError("stored frame digest does not match".into()));
+        }
+        file.seek(SeekFrom::Start(0))?;
+        Ok(file)
     }
 
     #[cfg(target_os = "espidf")]
@@ -403,11 +425,9 @@ impl FrameWriter {
             if metadata.len() != FRAME_BYTES as u64 {
                 return Err(StoreError("temporary frame verification failed".to_owned()));
             }
-            if final_path.exists() {
-                fs::remove_file(&self.temporary)?;
-            } else {
-                fs::rename(&self.temporary, final_path)?;
-            }
+            // Existing corrupt content must be repaired, not mistaken for a
+            // deduplicated success. Rename atomically replaces that file.
+            fs::rename(&self.temporary, final_path)?;
         }
         Ok(actual)
     }
@@ -461,12 +481,36 @@ fn partition_is_erased() -> Result<bool, StoreError> {
     if partition.is_null() {
         return Err(StoreError("LittleFS partition not found".to_owned()));
     }
-    let mut probe = [0u8; 64];
-    esp_idf_sys::esp!(unsafe {
-        esp_idf_sys::esp_partition_read(partition, 0, probe.as_mut_ptr().cast(), probe.len())
+    is_erased(unsafe { (*partition).size as usize }, |offset, bytes| {
+        esp_idf_sys::esp!(unsafe {
+            esp_idf_sys::esp_partition_read(
+                partition,
+                offset,
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+            )
+        })
+        .map_err(esp_error)
     })
-    .map_err(esp_error)?;
-    Ok(probe.iter().all(|byte| *byte == 0xff))
+}
+
+/// An erased superblock alone does not make a LittleFS volume blank: its
+/// redundant metadata can still mount. Formatting requires an entirely erased
+/// partition, and read failures must propagate rather than authorize a format.
+#[cfg(target_os = "espidf")]
+fn is_erased(
+    length: usize,
+    mut read: impl FnMut(usize, &mut [u8]) -> Result<(), StoreError>,
+) -> Result<bool, StoreError> {
+    let mut buffer = [0; 512];
+    for offset in (0..length).step_by(buffer.len()) {
+        let count = buffer.len().min(length - offset);
+        read(offset, &mut buffer[..count])?;
+        if buffer[..count].iter().any(|byte| *byte != 0xff) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(target_os = "espidf")]

@@ -102,6 +102,16 @@ impl Device {
         config
             .validate()
             .map_err(|error| DeviceError(error.to_string()))?;
+        if config.pull.url != self.config.pull.url
+            || config.pull.bearer_token != self.config.pull.bearer_token
+        {
+            // Validators describe one resource and authorization context. Clear
+            // them durably before changing that context: a failed config write
+            // then causes an extra full fetch, never a false 304 on the new URL.
+            let mut next = self.state.clone();
+            next.pull = PullValidators::default();
+            self.persist_state(next)?;
+        }
         self.store.save_config(&config)?;
         self.config = config;
         Ok(())
