@@ -41,6 +41,10 @@ pub struct Epd<'d> {
     chip_select: PinDriver<'d, Output>,
     busy: PinDriver<'d, Input>,
     sleeping: bool,
+    // Optical baseline survives sleep; controller RAM does not. Keep native
+    // bytes on the heap so retaining a frame does not grow the task's stack.
+    #[cfg(feature = "experimental-differential")]
+    previous_frame: Option<Box<[u8]>>,
     _spi2: SPI2<'d>,
 }
 
@@ -109,6 +113,8 @@ impl<'d> Epd<'d> {
             chip_select: PinDriver::output(pins.chip_select)?,
             busy: PinDriver::input(pins.busy, Pull::Up)?,
             sleeping: true,
+            #[cfg(feature = "experimental-differential")]
+            previous_frame: None,
             _spi2: spi2,
         };
         epd.chip_select.set_high()?;
@@ -176,6 +182,11 @@ impl<'d> Epd<'d> {
     fn power_off(&mut self) {
         let _ = self.power.set_low();
         self.sleeping = true;
+        #[cfg(feature = "experimental-differential")]
+        {
+            // A failed transfer may have changed pixels before returning.
+            self.previous_frame = None;
+        }
     }
 
     /// Bring the panel supply, controller, and scan configuration online.
@@ -217,6 +228,12 @@ impl<'d> Epd<'d> {
         self.command(0x04)?;
         FreeRtos::delay_ms(100);
         self.wait_idle(5_000)?;
+        self.load_stock_luts()?;
+        self.sleeping = false;
+        Ok(())
+    }
+
+    fn load_stock_luts(&mut self) -> Result<(), &'static str> {
         self.command(0x20)?;
         self.data(luts::lut_20())?;
         self.command(0x21)?;
@@ -227,7 +244,6 @@ impl<'d> Epd<'d> {
         self.data(luts::lut_23())?;
         self.command(0x24)?;
         self.data(luts::lut_24())?;
-        self.sleeping = false;
         Ok(())
     }
 
@@ -260,13 +276,20 @@ impl<'d> Epd<'d> {
         if result.is_err() {
             self.power_off();
         }
+        #[cfg(feature = "experimental-differential")]
+        if result.is_ok() {
+            self.remember_frame(frame);
+        }
         result
     }
 
     /// Experimental area-limited stock-waveform refresh, not a fast
     /// differential waveform. The caller must have already displayed the
     /// same content with an enabled status strip. Only 304 bytes per plane
-    /// are transferred; the existing voltage and LUT settings are retained.
+    /// are transferred; the stock control retains its voltage and LUT settings.
+    /// With experimental-differential, unchanged-pixel LUTs instead use zero
+    /// source-drive levels and DTM1 is the last successfully displayed strip.
+    #[cfg(not(feature = "experimental-differential"))]
     pub fn display_status_strip(&mut self, frame: &Frame) -> Result<(), &'static str> {
         let result = (|| {
             self.power_on()?;
@@ -286,6 +309,78 @@ impl<'d> Epd<'d> {
         if result.is_err() {
             // Force a cold controller initialization for the full fallback;
             // no partial addressing state may leak into its frame transfer.
+            self.power_off();
+        }
+        result
+    }
+
+    /// Refresh only the status window using its last successfully displayed pixels.
+    #[cfg(feature = "experimental-differential")]
+    pub fn display_status_strip(&mut self, frame: &Frame) -> Result<(), &'static str> {
+        self.display_differential(frame, true)
+    }
+
+    #[cfg(feature = "experimental-differential")]
+    fn remember_frame(&mut self, frame: &Frame) {
+        self.previous_frame
+            .get_or_insert_with(|| vec![0; frame.as_bytes().len()].into_boxed_slice())
+            .copy_from_slice(frame.as_bytes());
+    }
+
+    /// Use the last successful native image as DTM1 and zero source drive for
+    /// unchanged pixels. `status_only` limits transfer and scan to the strip;
+    /// otherwise all pixels, including main-image changes, are compared.
+    #[cfg(feature = "experimental-differential")]
+    pub fn display_differential(
+        &mut self,
+        frame: &Frame,
+        status_only: bool,
+    ) -> Result<(), &'static str> {
+        // Move only the heap handle; do not clone a framebuffer onto the stack.
+        let mut previous = self
+            .previous_frame
+            .take()
+            .ok_or("EPD partial baseline missing")?;
+        let bytes = if status_only {
+            super::status_window::BYTES
+        } else {
+            frame.as_bytes().len()
+        };
+        let result = (|| {
+            self.power_on()?;
+            // The original differential keeps B->W/W->B stock and only
+            // zeroes W->W/B->B. The fast experiment also shortens all timings.
+            for (command, table) in (0x20..=0x24).zip(luts::differential()) {
+                self.command(command)?;
+                self.data(table)?;
+            }
+            if status_only {
+                self.command(0x91)?; // PTIN
+                self.command(0x90)?; // PTL
+                self.data(&super::status_window::COMMAND)?;
+            }
+            self.command(0x10)?;
+            for chunk in previous[..bytes].chunks(256) {
+                self.data(chunk)?;
+            }
+            self.command(0x13)?;
+            for chunk in frame.as_bytes()[..bytes].chunks(256) {
+                self.data(chunk)?;
+            }
+            self.command(0x12)?;
+            FreeRtos::delay_ms(100);
+            self.wait_idle(12_000)?;
+            if status_only {
+                self.command(0x92)?; // PTOUT
+            }
+            self.sleep()
+        })();
+        if result.is_ok() {
+            // A strip update must preserve the cached body, even if its caller
+            // supplied different pixels outside the selected window.
+            previous[..bytes].copy_from_slice(&frame.as_bytes()[..bytes]);
+            self.previous_frame = Some(previous);
+        } else {
             self.power_off();
         }
         result

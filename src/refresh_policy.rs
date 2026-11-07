@@ -44,6 +44,10 @@ impl RefreshTracker {
             })
     }
 
+    pub fn can_refresh_differential(&self) -> bool {
+        self.partials < 4 && self.displayed.is_some()
+    }
+
     pub fn partial_succeeded(&mut self, key: RefreshKey) {
         self.displayed = Some(key);
         self.retry_after_ms = 0;

@@ -71,11 +71,11 @@ const BLACK_LEVELS: [[Level; 4]; 4] = [
 /// A zero group-repeat byte terminates the sequence; those bytes are not idle
 /// phases. These const calls do all encoding at compile time, without a buffer
 /// or extra stack allocation in the panel's refresh path.
-const fn encode(levels: [[Level; 4]; 4]) -> [u8; 80] {
+const fn encode(timings: &[Timing], levels: &[[Level; 4]]) -> [u8; 80] {
     let mut bytes = [0; 80];
     let mut group = 0;
-    while group < TIMING.len() {
-        let timing = &TIMING[group];
+    while group < timings.len() {
+        let timing = &timings[group];
         let packed = (levels[group][0] as u8) << 6
             | (levels[group][1] as u8) << 4
             | (levels[group][2] as u8) << 2
@@ -94,9 +94,25 @@ const fn encode(levels: [[Level; 4]; 4]) -> [u8; 80] {
     bytes
 }
 
-const VCOM: [u8; 80] = encode([[Reference; 4]; 4]);
-const WHITE: [u8; 80] = encode(WHITE_LEVELS);
-const BLACK: [u8; 80] = encode(BLACK_LEVELS);
+const VCOM: [u8; 80] = encode(&TIMING, &[[Reference; 4]; 4]);
+const WHITE: [u8; 80] = encode(&TIMING, &WHITE_LEVELS);
+const BLACK: [u8; 80] = encode(&TIMING, &BLACK_LEVELS);
+
+// Experimental direct write: one 48-frame pulse in the stock final-drive
+// polarity, followed by three neutral frames. No erase/alternation groups.
+// At 160 Hz, 51 programmed frames plus the two-frame ending take 331.25 ms.
+#[cfg(feature = "experimental-fast")]
+const FAST_TIMING: [Timing; 1] = [Timing {
+    repeats: 1,
+    frames: [48, 1, 1, 1],
+    state_repeats: [1, 1],
+}];
+#[cfg(feature = "experimental-fast")]
+const FAST_ZERO: [u8; 80] = encode(&FAST_TIMING, &[[Reference; 4]]);
+#[cfg(feature = "experimental-fast")]
+const FAST_WHITE: [u8; 80] = encode(&FAST_TIMING, &[[Low, Reference, Reference, Reference]]);
+#[cfg(feature = "experimental-fast")]
+const FAST_BLACK: [u8; 80] = encode(&FAST_TIMING, &[[High, Reference, Reference, Reference]]);
 
 pub fn lut_20() -> &'static [u8] {
     &VCOM
@@ -115,6 +131,47 @@ pub fn lut_24() -> &'static [u8] {
     &BLACK
 }
 
+/// Zero source-drive levels for unchanged pixels, with the selected timings.
+/// The bytes match VCOM's table, but selector 00 means 0 V for pixel outputs.
+/// R21 takes the first 56 bytes; R24 takes all 80. Keeping the timing fields
+/// avoids terminating these tables before the changed-pixel patterns finish.
+#[cfg(feature = "experimental-differential")]
+pub fn lut_unchanged() -> &'static [u8] {
+    #[cfg(feature = "experimental-fast")]
+    {
+        &FAST_ZERO
+    }
+    #[cfg(not(feature = "experimental-fast"))]
+    {
+        &VCOM
+    }
+}
+
+/// All five differential payloads must share timings, including VCOM and idle
+/// pixels. Stock and fast profiles are kept distinct for hardware comparison.
+#[cfg(feature = "experimental-differential")]
+pub fn differential() -> [&'static [u8]; 5] {
+    #[cfg(feature = "experimental-fast")]
+    {
+        [
+            lut_unchanged(),
+            &lut_unchanged()[..56],
+            &FAST_WHITE,
+            &FAST_BLACK,
+            lut_unchanged(),
+        ]
+    }
+    #[cfg(not(feature = "experimental-fast"))]
+    {
+        [
+            lut_20(),
+            &lut_unchanged()[..56],
+            lut_22(),
+            lut_23(),
+            lut_unchanged(),
+        ]
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

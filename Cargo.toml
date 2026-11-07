@@ -13,6 +13,10 @@ opt-level = "s"
 [features]
 # Opt-in hardware experiment; the normal firmware keeps its proven full refresh.
 experimental-partial = []
+# Keep the stock window experiment available as a control for this LUT change.
+experimental-differential = ["experimental-partial"]
+# Short drive pulses; keep the original differential as a control.
+experimental-fast = ["experimental-differential"]
 
 [profile.dev]
 debug = true    # Symbols are nice, and they don't increase the size on Flash

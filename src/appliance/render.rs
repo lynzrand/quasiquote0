@@ -85,22 +85,39 @@ impl<'d> Renderer<'d> {
         }
         let composed = frame.sha256();
         let projected = frame.project();
-        let partial =
+        let status_only =
             cfg!(feature = "experimental-partial") && refreshes.can_refresh_status_only(key);
         let started = rtc_schedule::now_ms();
-        let mut mode = if partial { "partial-window" } else { "full" };
+        let mut mode = "full";
+        let mut incremental = None;
+        if status_only {
+            mode = if cfg!(feature = "experimental-fast") {
+                "fast-window"
+            } else if cfg!(feature = "experimental-differential") {
+                "partial-differential"
+            } else {
+                "partial-window"
+            };
+            incremental = Some(display.display_status_strip(&projected));
+        }
+        #[cfg(feature = "experimental-differential")]
+        if !status_only && refreshes.can_refresh_differential() {
+            mode = if cfg!(feature = "experimental-fast") {
+                "fast-differential"
+            } else {
+                "differential"
+            };
+            incremental = Some(display.display_differential(&projected, false));
+        }
         let mut partial_error = None;
-        let transfer = if partial {
-            match display.display_status_strip(&projected) {
-                Ok(()) => Ok(()),
-                Err(error) => {
-                    partial_error = Some(error.to_owned());
-                    mode = "full-fallback";
-                    display.display(&projected)
-                }
+        let transfer = match incremental {
+            Some(Ok(())) => Ok(()),
+            Some(Err(error)) => {
+                partial_error = Some(error.to_owned());
+                mode = "full-fallback";
+                display.display(&projected)
             }
-        } else {
-            display.display(&projected)
+            None => display.display(&projected),
         };
         let elapsed = rtc_schedule::now_ms().saturating_sub(started);
         let result = transfer.map_err(str::to_owned).and_then(|()| {
@@ -118,7 +135,7 @@ impl<'d> Renderer<'d> {
         });
         match result {
             Ok(()) => {
-                if mode == "partial-window" {
+                if incremental.is_some() && partial_error.is_none() {
                     refreshes.partial_succeeded(key);
                 } else {
                     refreshes.succeeded(key);
