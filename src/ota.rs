@@ -96,7 +96,6 @@ pub fn running_partition_label() -> Option<String> {
         .iter()
         .copied()
         .take_while(|byte| *byte != 0)
-        .map(|byte| byte as u8)
         .collect();
     String::from_utf8(bytes).ok()
 }

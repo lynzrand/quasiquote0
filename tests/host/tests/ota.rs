@@ -25,7 +25,7 @@ thread_local! {
 #[allow(non_camel_case_types)]
 pub type esp_ota_handle_t = u32;
 pub struct Partition {
-    pub label: [i8; 16],
+    pub label: [u8; 16],
 }
 static PARTITION: Partition = Partition {
     label: [111, 116, 97, 95, 49, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],

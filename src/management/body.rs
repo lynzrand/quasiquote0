@@ -39,6 +39,6 @@ impl<T: EmbeddedRead> io::Read for Body<'_, T> {
         }
         self.request
             .read(bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::Other, format!("{error:?}")))
+            .map_err(|error| io::Error::other(format!("{error:?}")))
     }
 }

@@ -57,17 +57,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build libclang-dev libudev-dev libusb-1.0-0-dev python3-venv flex bison gperf libffi-dev libssl-dev
           cargo +stable install ldproxy --locked
-      - name: Build firmware
+          rustup component add clippy
+      - name: Lint and build firmware
         env:
           VARIANT: ${{ matrix.variant }}
         run: |
-          if [ "$VARIANT" = default ]; then
-            cargo build --locked --bin quasiquote0
-          elif [ "$VARIANT" = stock ]; then
-            cargo build --locked --bin quasiquote0 --no-default-features
+          if [ "$VARIANT" = stock ]; then
+            quote0_features=(--no-default-features)
+          elif [ "$VARIANT" = default ]; then
+            quote0_features=()
           else
-            cargo build --locked --bin quasiquote0 --no-default-features --features "$VARIANT"
+            quote0_features=(--no-default-features --features "$VARIANT")
           fi
+          cargo clippy --locked --bin quasiquote0 "${quote0_features[@]}" -- -D warnings
+          cargo build --locked --bin quasiquote0 "${quote0_features[@]}"
       - name: Package and enforce OTA slot size
         env:
           VARIANT: ${{ matrix.variant }}
