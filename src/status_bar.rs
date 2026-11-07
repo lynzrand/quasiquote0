@@ -1,25 +1,26 @@
 //! The small device-owned status overlay described in the proposal.
 //!
-//! The supplied one-bit icons are compiled into the firmware. The bar never
+//! The one-bit icons are compiled into the firmware. The bar never
 //! owns refresh scheduling; callers compose a complete snapshot for content
 //! changes and each minute heartbeat.
 
 use crate::clock_face::ClockFace;
+use crate::embedded_graphics::LandscapeFramebuffer;
 use crate::frame::{Frame, HEIGHT, WIDTH};
 use crate::status_icons::{
     Icon, BATTERY_0, BATTERY_100, BATTERY_25, BATTERY_50, BATTERY_75, BATTERY_CRITICAL, BLUETOOTH,
-    CHARGING, USB_POWER, WIFI_CONNECTED, WIFI_DISCONNECTED, WIFI_PULL_FAILED,
+    CHARGING, USB_POWER, WIFI_CONNECTED, WIFI_CONNECTING, WIFI_DISCONNECTED, WIFI_PULL_FAILED,
 };
-use core::convert::Infallible;
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyle},
+    mono_font::{ascii::FONT_7X13_BOLD, MonoTextStyle},
     pixelcolor::BinaryColor,
     prelude::*,
-    text::Text,
+    text::{Baseline, Text},
 };
 
 pub const WIDTH_PIXELS: usize = 16;
 pub const CONTENT_WIDTH: usize = WIDTH - WIDTH_PIXELS;
+const CLOCK_TOP: usize = 112;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BatteryMarker {
@@ -68,25 +69,41 @@ impl StatusBar {
         }
 
         if let Some(marker) = self.battery {
-            draw_icon(frame, 0, battery_icon(marker));
+            draw_icon(frame, 4, battery_icon(marker));
         }
         if let Some(marker) = self.wifi {
-            draw_icon(frame, 24, wifi_icon(marker));
+            draw_icon(frame, 28, wifi_icon(marker));
         }
         if self.usb_present {
-            draw_icon(frame, 48, USB_POWER);
+            draw_icon(frame, 52, USB_POWER);
         }
         if self.bluetooth_present {
-            draw_icon(frame, 72, BLUETOOTH);
+            draw_icon(frame, 76, BLUETOOTH);
         }
+        for x in 4..12 {
+            frame.set_pixel(CONTENT_WIDTH + x, 103, false);
+        }
+        // ClockFace always returns five ASCII characters: HH:MM or --:--.
+        // Keep the digits upright, with hours above minutes and a fixed colon.
         let text = ClockFace::at(self.unix_seconds.unwrap_or(0)).text();
-        Text::new(
-            &text,
-            Point::new(0, 7),
-            MonoTextStyle::new(&FONT_6X10, BinaryColor::Off),
-        )
-        .draw(&mut ClockTarget(frame))
-        .unwrap();
+        let style = MonoTextStyle::new(&FONT_7X13_BOLD, BinaryColor::Off);
+        for (digits, y) in [(&text[..2], CLOCK_TOP), (&text[3..], CLOCK_TOP + 22)] {
+            Text::with_baseline(
+                digits,
+                Point::new((CONTENT_WIDTH + 1) as i32, y as i32),
+                style,
+                Baseline::Top,
+            )
+            .draw(&mut LandscapeFramebuffer(frame))
+            .unwrap();
+        }
+        for y in [CLOCK_TOP + 14, CLOCK_TOP + 18] {
+            for dy in 0..2 {
+                for x in 7..9 {
+                    frame.set_pixel(CONTENT_WIDTH + x, y + dy, false);
+                }
+            }
+        }
     }
 }
 
@@ -107,56 +124,20 @@ fn battery_icon(marker: BatteryMarker) -> Icon {
 fn wifi_icon(marker: WifiMarker) -> Icon {
     match marker {
         WifiMarker::Connected => WIFI_CONNECTED,
-        // There is no distinct association-progress artwork; disconnected is
-        // the least misleading snapshot while association is incomplete.
-        WifiMarker::Disconnected | WifiMarker::Connecting => WIFI_DISCONNECTED,
+        WifiMarker::Disconnected => WIFI_DISCONNECTED,
+        // A static progress glyph avoids animation-only display refreshes.
+        WifiMarker::Connecting => WIFI_CONNECTING,
         WifiMarker::Failed => WIFI_PULL_FAILED,
     }
 }
 
-/// Rotate HH:MM into the strip using the same orientation as the icon art.
-/// Its 30x10 source fits in the bottom 30 rows with a three-pixel side margin.
-struct ClockTarget<'a>(&'a mut Frame);
-
-impl OriginDimensions for ClockTarget<'_> {
-    fn size(&self) -> Size {
-        Size::new(30, 10)
-    }
-}
-
-impl DrawTarget for ClockTarget<'_> {
-    type Color = BinaryColor;
-    type Error = Infallible;
-
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        for Pixel(point, color) in pixels {
-            if (0..30).contains(&point.x) && (0..10).contains(&point.y) {
-                self.0.set_pixel(
-                    CONTENT_WIDTH + 3 + 9 - point.y as usize,
-                    HEIGHT - 30 + point.x as usize,
-                    color == BinaryColor::On,
-                );
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Draw a sprite rotated a quarter-turn counter-clockwise. The strip is a
-/// narrow vertical band on the panel, but the icon art is authored for the
-/// device's landscape reading orientation, so battery terminals point right.
+/// Draw artwork upright in the final landscape coordinates. Projection into
+/// controller order happens only at the EPD boundary.
 fn draw_icon(frame: &mut Frame, y: usize, icon: Icon) {
     for (row_index, row) in icon.iter().copied().enumerate() {
         for column in 0..WIDTH_PIXELS {
             if row & (0x8000 >> column) != 0 {
-                frame.set_pixel(
-                    CONTENT_WIDTH + (WIDTH_PIXELS - 1 - row_index),
-                    y + column,
-                    false,
-                );
+                frame.set_pixel(CONTENT_WIDTH + column, y + row_index, false);
             }
         }
     }
@@ -178,10 +159,10 @@ mod tests {
 
         assert_eq!(frame.pixel_is_white(CONTENT_WIDTH - 1, 0), Some(false));
         assert_eq!(frame.pixel_is_white(CONTENT_WIDTH, HEIGHT - 1), Some(true));
-        // Battery-75's terminal nub is sprite row 1, columns 6-9; rotated a
-        // quarter-turn counter-clockwise it lands at canvas x=CONTENT_WIDTH+14.
-        assert_eq!(frame.pixel_is_white(CONTENT_WIDTH + 14, 6), Some(false));
-        assert_eq!(frame.pixel_is_white(CONTENT_WIDTH + 14, 9), Some(false));
+        // Upright battery cap: sprite row 1, columns 6-9, placed four rows down.
+        assert_eq!(frame.pixel_is_white(CONTENT_WIDTH + 6, 5), Some(false));
+        assert_eq!(frame.pixel_is_white(CONTENT_WIDTH + 9, 5), Some(false));
+        assert_eq!(frame.pixel_is_white(CONTENT_WIDTH + 5, 5), Some(true));
     }
 
     #[test]
@@ -214,9 +195,11 @@ mod tests {
             }
         }
         StatusBar::default().overlay(&mut frame);
-        for y in 0..88 {
+        let mut cleared = Frame::white();
+        StatusBar::default().overlay(&mut cleared);
+        for y in 0..HEIGHT {
             for x in CONTENT_WIDTH..WIDTH {
-                assert_eq!(frame.pixel_is_white(x, y), Some(true));
+                assert_eq!(frame.pixel_is_white(x, y), cleared.pixel_is_white(x, y));
             }
         }
     }
@@ -237,7 +220,14 @@ mod tests {
         }
         .overlay(&mut next);
         assert_ne!(first.as_bytes(), next.as_bytes());
-        for y in 0..HEIGHT - 30 {
+        let mut same_minute = Frame::white();
+        StatusBar {
+            unix_seconds: Some(seconds + 59),
+            ..Default::default()
+        }
+        .overlay(&mut same_minute);
+        assert_eq!(first.as_bytes(), same_minute.as_bytes());
+        for y in 0..CLOCK_TOP {
             for x in 0..WIDTH {
                 assert_eq!(first.pixel_is_white(x, y), next.pixel_is_white(x, y));
             }
