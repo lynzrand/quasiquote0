@@ -1,6 +1,7 @@
 //! Quote/0 battery and USB-VBUS sensing (GPIO1 ADC, GPIO0 VBUS).
 
-const SAMPLES: usize = 20;
+mod samples;
+
 const EMPTY_MV: u32 = 2910;
 const FULL_MV: u32 = 4200;
 
@@ -28,24 +29,19 @@ pub fn read() -> BatteryStatus {
                 atten: adc_atten_t_ADC_ATTEN_DB_11,
                 bitwidth: adc_bitwidth_t_ADC_BITWIDTH_12,
             };
-            let mut samples = [0_i32; SAMPLES];
-            let mut count = 0;
-            if esp!(adc_oneshot_config_channel(unit, channel, &channel_config)).is_ok() {
-                for sample in &mut samples {
-                    let mut raw = 0;
-                    if esp!(adc_oneshot_read(unit, channel, &mut raw)).is_ok() {
-                        *sample = raw;
-                        count += 1;
-                    }
-                }
-            }
+            let millivolts =
+                if esp!(adc_oneshot_config_channel(unit, channel, &channel_config)).is_ok() {
+                    samples::millivolts(|| {
+                        let mut raw = 0;
+                        esp!(adc_oneshot_read(unit, channel, &mut raw))
+                            .ok()
+                            .map(|()| raw)
+                    })
+                } else {
+                    None
+                };
             let _ = esp!(adc_oneshot_del_unit(unit));
-            if count < SAMPLES / 2 {
-                None
-            } else {
-                samples[..count].sort_unstable();
-                Some((samples[count / 2] as u32 * 3300 / 4095) * 2 + 29)
-            }
+            millivolts
         }
     };
     let percent =
