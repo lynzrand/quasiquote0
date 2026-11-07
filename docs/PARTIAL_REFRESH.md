@@ -6,7 +6,9 @@ window after a successful full baseline in the same boot.
 
 This is an area-limited stock-waveform refresh, not a faster differential
 waveform. It retains the panel's proven voltage, timing, LUT, and old-plane
-settings. MindReset's [public display driver](https://github.com/MindReset/dot_open_platform/blob/main/devices/quote_0/firmware-resources/display/README.md)
+settings. The [waveform reconstruction](WAVEFORM.md) describes the generated
+stock LUT's phase levels, timings, and byte-for-byte verification.
+MindReset's [public display driver](https://github.com/MindReset/dot_open_platform/blob/main/devices/quote_0/firmware-resources/display/README.md)
 provides full refresh only; its [waveform notes](https://github.com/MindReset/dot_open_platform/blob/main/devices/quote_0/firmware-resources/display/waveforms/README.md)
 provide no separate partial waveform.
 
