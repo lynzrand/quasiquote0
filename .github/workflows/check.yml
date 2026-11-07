@@ -1,0 +1,75 @@
+name: Check firmware and browser
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+      - name: Install host Rust tools
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - name: Check formatting
+        run: |
+          cargo +stable fmt --all -- --check
+          cargo +stable fmt --manifest-path tests/host/Cargo.toml -- --check
+      - name: Host tests and Clippy
+        run: |
+          cargo +stable test --locked --manifest-path tests/host/Cargo.toml --target x86_64-unknown-linux-gnu --target-dir target/host-tests
+          cargo +stable clippy --locked --manifest-path tests/host/Cargo.toml --target x86_64-unknown-linux-gnu --target-dir target/host-tests --all-targets -- -D warnings
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - name: Install test browser
+        run: pnpm exec playwright-core install --with-deps chromium
+      - name: Browser integration tests
+        env:
+          QUOTE0_LOCAL_BROWSER: '1'
+        run: pnpm test:browser
+
+  firmware:
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      matrix:
+        variant: [default, experimental-partial]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install ESP-IDF build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libclang-dev libudev-dev libusb-1.0-0-dev python3-venv flex bison gperf libffi-dev libssl-dev
+          cargo +stable install ldproxy --locked
+      - name: Build firmware
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          if [ "$VARIANT" = default ]; then
+            cargo build --locked --bin quasiquote0
+          else
+            cargo build --locked --bin quasiquote0 --features experimental-partial
+          fi
+      - name: Package and enforce OTA slot size
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          quote0_idf_python=(.embuild/espressif/python_env/*/bin/python)
+          "${quote0_idf_python[0]}" tools/package_firmware.py --name "quasiquote0-$VARIANT"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: firmware-${{ matrix.variant }}
+          path: target/firmware/quasiquote0-${{ matrix.variant }}/
+          if-no-files-found: error

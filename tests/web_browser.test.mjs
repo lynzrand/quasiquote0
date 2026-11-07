@@ -6,9 +6,13 @@ import { createHash } from 'node:crypto';
 import { chromium } from 'playwright-core';
 
 const cdp = process.env.QUOTE0_CDP_URL;
+const local = process.env.QUOTE0_LOCAL_BROWSER === '1';
+const openBrowser = () => cdp
+  ? chromium.connectOverCDP(cdp)
+  : chromium.launch({ headless: true });
 test('image conversion, preview, download and canonical upload in a real browser',
-  { skip: !cdp && 'Set QUOTE0_CDP_URL to an isolated browser debugging endpoint' }, async () => {
-    const browser = await chromium.connectOverCDP(cdp);
+  { skip: !cdp && !local && 'Set QUOTE0_CDP_URL or QUOTE0_LOCAL_BROWSER=1' }, async () => {
+    const browser = await openBrowser();
     const context = await browser.newContext({ acceptDownloads: true });
     const page = await context.newPage();
     if (process.env.QUOTE0_BROWSER_DOWNLOAD_DIR) {
@@ -140,8 +144,8 @@ test('image conversion, preview, download and canonical upload in a real browser
   });
 
 test('portable backup download and confirmed import in a real browser',
-  { skip: !cdp && 'Set QUOTE0_CDP_URL to an isolated browser debugging endpoint' }, async () => {
-    const browser = await chromium.connectOverCDP(cdp);
+  { skip: !cdp && !local && 'Set QUOTE0_CDP_URL or QUOTE0_LOCAL_BROWSER=1' }, async () => {
+    const browser = await openBrowser();
     const context = await browser.newContext({ acceptDownloads: true });
     const page = await context.newPage();
     const image = Buffer.alloc(5624, 255);

@@ -76,15 +76,12 @@ The browser accepts an application `.bin`, not the ELF, a merged flash image,
 or a whole-device backup. With the ESP-IDF Python environment activated:
 
 ```sh
-mkdir -p target/firmware
-python -m esptool --chip esp32c3 elf2image \
-  --flash_mode dio --flash_freq 40m --flash_size 4MB \
-  --elf-sha256-offset 0xb0 \
-  -o target/firmware/quasiquote0.bin \
-  target/riscv32imc-esp-espidf/debug/quasiquote0
+python tools/package_firmware.py
 ```
 
-This command uses the esptool 4.x syntax supplied by the verified ESP-IDF
+This writes `target/firmware/quasiquote0/quasiquote0.bin` and `SHA256SUMS`, and
+rejects images that exceed either OTA slot in `partitions.csv`.
+It uses the esptool 4.x syntax supplied by the verified ESP-IDF
 v5.5.3 environment. Its local Python interpreter lives under
 `.embuild/espressif/python_env/`; the versioned directory name depends on the
 host Python. For example, the local build environment used
@@ -105,7 +102,7 @@ toolchain. With the native USB JTAG driver installed and an application image
 built above:
 
 ```powershell
-.\tools\flash_app_windows.ps1 -Port COM4 -Image .\target\firmware\quasiquote0.bin
+.\tools\flash_app_windows.ps1 -Port COM4 -Image .\target\firmware\quasiquote0\quasiquote0.bin
 ```
 
 The script detects the running OTA slot through USB and overwrites that slot;
@@ -175,7 +172,10 @@ cargo +stable fmt --all -- --check
 ```
 
 These tests compile the production BTHome encoder, frame handling, policy, and
-persistence modules without ESP-IDF. They cover bounded USB parsing, publication
+persistence modules without ESP-IDF. They also run the panel transport against
+virtual GPIO/SPI to verify power-off and cold retry after BUSY timeouts, and
+check that failed ADC samples cannot distort the battery median.
+They cover bounded USB parsing, publication
 exclusion, interrupted and corrupt frames, saved-format compatibility, and
 minute acknowledgements without flash writes. Passing them does not establish
 full filesystem power-loss recovery or hardware behavior.
@@ -193,7 +193,15 @@ QUOTE0_CDP_URL=http://127.0.0.1:9222 pnpm test:browser
 The integration test uses mocked device APIs and a fresh browser context. For
 a Windows browser driven from WSL, set `QUOTE0_BROWSER_DOWNLOAD_DIR` to an
 absolute Windows temporary directory so downloads use the browser's filesystem.
-Without `QUOTE0_CDP_URL`, the browser test is skipped; that is not a passing UI check.
+To run a local headless browser instead, install it with
+`pnpm exec playwright-core install --with-deps chromium`, then run
+`QUOTE0_LOCAL_BROWSER=1 pnpm test:browser`. Without either browser option,
+the browser test is skipped; that is not a passing UI check.
+
+GitHub Actions runs these host and browser checks, then builds the default and
+`experimental-partial` firmware. Each successful build produces a size-checked
+application image and SHA-256 file as a workflow artifact. These are OTA images;
+first installation still requires the matching bootloader and partition table.
 
 ### On-board checks
 
