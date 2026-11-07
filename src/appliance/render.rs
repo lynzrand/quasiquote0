@@ -56,22 +56,29 @@ impl<'d> Renderer<'d> {
         let refreshes = &mut self.refreshes;
         let seconds = status.unix_seconds.unwrap_or_else(wall_clock::unix_seconds);
         let now_ms = rtc_schedule::now_ms();
-        let candidate = {
-            let device = device.lock().unwrap();
-            device.desired_digest().ok().and_then(|content| {
-                let key = RefreshKey::new(content, device.config().display.status_bar, seconds);
-                if !refreshes.is_due(key, now_ms) {
-                    return None;
+        let (mut frame, key) = {
+            let mut device = device.lock().unwrap();
+            let content = match device.desired_digest() {
+                Ok(content) => content,
+                Err(error) => {
+                    refreshes.failed(now_ms);
+                    device.display_error = Some(error.to_string());
+                    return;
                 }
-                match device.load_desired_frame() {
-                    Ok(None) if device.state().desired.is_some() => None,
-                    Ok(frame) => Some((frame.unwrap_or_default(), key)),
-                    Err(_) => None,
+            };
+            let key = RefreshKey::new(content, device.config().display.status_bar, seconds);
+            if !refreshes.is_due(key, now_ms) {
+                return;
+            }
+            let frame = match device.load_desired_frame() {
+                Ok(frame) => frame.unwrap_or_default(),
+                Err(error) => {
+                    refreshes.failed(now_ms);
+                    device.display_error = Some(error.to_string());
+                    return;
                 }
-            })
-        };
-        let Some((mut frame, key)) = candidate else {
-            return;
+            };
+            (frame, key)
         };
         if key.status_bar {
             status.overlay(&mut frame);

@@ -50,6 +50,10 @@ An erased first superblock is insufficient: LittleFS may still recover through
 its redundant metadata. Existing content-addressed files are verified before
 deduplication, so uploading the original bytes repairs a corrupt file. Changing
 a pull URL or bearer token clears validators before saving the new source.
+Conditional pulls also require verified retained bytes; missing or corrupt
+content omits both validators so the server can return a complete replacement.
+The renderer reports missing or corrupt content as an error without replacing
+the visible image with a blank frame.
 
 The retained source frame excludes device overlays. Each refresh composes the
 status strip from that source. Content, layout, and firmware transitions persist
@@ -76,6 +80,9 @@ is the physical setup and recovery transport. Keep the verified 64 KiB main
 stack: full-frame composition and projection have substantial stack peaks.
 Wi-Fi/TLS buffers and NimBLE broadcaster-only roles are intentionally bounded
 in `sdkconfig.defaults` to leave room for the panel and browser uploads.
+Avoid extra full-frame locals in `Device::load_desired_frame`: the size-optimized
+build can retain stack copies across return conversions. Recheck
+`memory.main_stack_min_free_bytes` in the status API after rendering/storage changes.
 
 ## Saved-format compatibility
 

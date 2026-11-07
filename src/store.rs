@@ -305,17 +305,17 @@ impl Store {
         })
     }
 
-    pub fn load_frame(&self, digest: &Sha256Digest) -> Result<Option<Frame>, StoreError> {
+    pub fn load_frame(&self, digest: &Sha256Digest) -> Result<Frame, StoreError> {
         let path = self.frame_path(digest);
         if !path.exists() {
-            return Ok(None);
+            return Err(StoreError("Retained frame is missing".into()));
         }
         let mut file = self.open_verified_frame(digest)?;
         let mut bytes = vec![0; FRAME_BYTES];
         file.read_exact(&mut bytes)?;
         let frame = Frame::from_bytes(&bytes)
             .map_err(|_| StoreError("stored frame has invalid length".to_owned()))?;
-        Ok(Some(frame))
+        Ok(frame)
     }
 
     /// Verify stored bytes before deduplication or streaming them to a backup.

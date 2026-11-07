@@ -80,8 +80,15 @@ impl Device {
         &self.state
     }
 
+    /// A conditional request is useful only when its retained content is
+    /// intact. Missing or corrupt bytes need an unconditional replacement.
     pub fn pull_snapshot(&self) -> (Config, PullValidators) {
-        (self.config.clone(), self.state.pull.clone())
+        let validators = if self.backup_frame().is_ok_and(|frame| frame.is_some()) {
+            self.state.pull.clone()
+        } else {
+            PullValidators::default()
+        };
+        (self.config.clone(), validators)
     }
 
     pub fn pull_error(&self) -> Option<&str> {
@@ -216,12 +223,14 @@ impl Device {
             .map_err(Into::into)
     }
 
+    /// `None` means no image was configured. A referenced but missing file is
+    /// a storage error, so the renderer can report it without painting blank.
     pub fn load_desired_frame(&self) -> Result<Option<Frame>, DeviceError> {
         let Some(desired) = &self.state.desired else {
             return Ok(None);
         };
         let digest = parse_digest(&desired.sha256).map_err(|error| DeviceError(error.into()))?;
-        self.store.load_frame(&digest).map_err(Into::into)
+        self.store.load_frame(&digest).map(Some).map_err(Into::into)
     }
 
     pub fn mark_displayed(
