@@ -2,6 +2,8 @@
 name = "quasiquote0-host-tests"
 version = "0.0.0"
 edition = "2021"
+# Match the firmware crate so Clippy respects the shared source's MSRV.
+rust-version = "1.82"
 publish = false
 
 [workspace]

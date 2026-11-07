@@ -188,7 +188,7 @@ pub unsafe fn spi_bus_add_device(
     _: *const spi_device_interface_config_t,
     handle: *mut spi_device_handle_t,
 ) -> i32 {
-    *handle = core::ptr::dangling_mut();
+    *handle = core::ptr::NonNull::dangling().as_ptr();
     0
 }
 /// # Safety
