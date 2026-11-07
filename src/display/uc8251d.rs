@@ -156,8 +156,7 @@ impl<'d> Epd<'d> {
                 unsafe { esp_idf_sys::spi_device_polling_transmit(self.spi, &mut transaction) };
             if result != esp_idf_sys::ESP_OK {
                 let _ = self.chip_select.set_high();
-                let _ = self.power.set_low();
-                self.sleeping = true;
+                self.power_off();
                 return Err("EPD SPI transfer failed");
             }
         }
@@ -170,6 +169,13 @@ impl<'d> Epd<'d> {
     }
     fn data(&mut self, data: &[u8]) -> Result<(), &'static str> {
         self.write(true, data)
+    }
+
+    /// Drop controller state after any failed refresh, including BUSY timeouts.
+    /// The next attempt must run the complete power-on and reset sequence.
+    fn power_off(&mut self) {
+        let _ = self.power.set_low();
+        self.sleeping = true;
     }
 
     /// Bring the panel supply, controller, and scan configuration online.
@@ -235,20 +241,26 @@ impl<'d> Epd<'d> {
     /// Chunks follow the actual frame length, including its final 248-byte
     /// tail; sending a full 256-byte tail corrupts the next command.
     pub fn display(&mut self, frame: &Frame) -> Result<(), &'static str> {
-        self.power_on()?;
-        let old = [0u8; 256];
-        self.command(0x10)?; // old image
-        for chunk in frame.as_bytes().chunks(old.len()) {
-            self.data(&old[..chunk.len()])?;
+        let result = (|| {
+            self.power_on()?;
+            let old = [0u8; 256];
+            self.command(0x10)?; // old image
+            for chunk in frame.as_bytes().chunks(old.len()) {
+                self.data(&old[..chunk.len()])?;
+            }
+            self.command(0x13)?;
+            for chunk in frame.as_bytes().chunks(256) {
+                self.data(chunk)?;
+            }
+            self.command(0x12)?;
+            FreeRtos::delay_ms(100);
+            self.wait_idle(12_000)?;
+            self.sleep()
+        })();
+        if result.is_err() {
+            self.power_off();
         }
-        self.command(0x13)?;
-        for chunk in frame.as_bytes().chunks(256) {
-            self.data(chunk)?;
-        }
-        self.command(0x12)?;
-        FreeRtos::delay_ms(100);
-        self.wait_idle(12_000)?;
-        self.sleep()
+        result
     }
 
     /// Experimental area-limited stock-waveform refresh, not a fast
@@ -274,8 +286,7 @@ impl<'d> Epd<'d> {
         if result.is_err() {
             // Force a cold controller initialization for the full fallback;
             // no partial addressing state may leak into its frame transfer.
-            let _ = self.power.set_low();
-            self.sleeping = true;
+            self.power_off();
         }
         result
     }
