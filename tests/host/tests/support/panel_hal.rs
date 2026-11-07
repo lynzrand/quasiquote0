@@ -10,7 +10,10 @@ pub struct Panel {
     pub command: u8,
     pub busy_at: Option<u8>,
     pub commands: Vec<u8>,
+    pub payloads: Vec<(u8, Vec<u8>)>,
     pub elapsed_ms: u64,
+    pub retained_composed: Option<[u8; 32]>,
+    pub deep_sleep_wake: bool,
 }
 thread_local! {
     pub static PANEL: RefCell<Panel> = RefCell::new(Panel::default());
@@ -198,6 +201,18 @@ pub unsafe fn spi_device_polling_transmit(
             let command = *((*transfer).__bindgen_anon_1.tx_buffer.cast::<u8>());
             panel.command = command;
             panel.commands.push(command);
+            panel.payloads.push((command, Vec::new()));
+        } else {
+            let bytes = core::slice::from_raw_parts(
+                (*transfer).__bindgen_anon_1.tx_buffer.cast::<u8>(),
+                (*transfer).length / 8,
+            );
+            panel
+                .payloads
+                .last_mut()
+                .unwrap()
+                .1
+                .extend_from_slice(bytes);
         }
     });
     0

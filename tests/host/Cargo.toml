@@ -8,6 +8,8 @@ publish = false
 
 [features]
 experimental-partial = []
+experimental-differential = ["experimental-partial"]
+experimental-fast = ["experimental-differential"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

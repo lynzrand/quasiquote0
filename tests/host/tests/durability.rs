@@ -186,7 +186,7 @@ fn minute_acknowledgement_updates_ram_without_rewriting_flash() {
     let content = publish(&mut device, &Frame::white()).unwrap();
     let first_composed = Frame::white().sha256();
     device
-        .mark_displayed(&content, &first_composed, "test", 1_800_000_000, true)
+        .mark_displayed(&content, &first_composed, "test", 1_800_000_000, true, true)
         .unwrap();
     let state_path = root.0.join("state/device.v1.json");
     let persisted = fs::read(&state_path).unwrap();
@@ -194,7 +194,7 @@ fn minute_acknowledgement_updates_ram_without_rewriting_flash() {
     fs::create_dir(root.0.join("state/device.v1.json.new")).unwrap();
     let next_composed = Frame::black().sha256();
     device
-        .mark_displayed(&content, &next_composed, "test", 1_800_000_060, true)
+        .mark_displayed(&content, &next_composed, "test", 1_800_000_060, true, true)
         .unwrap();
     assert_eq!(device.display_clock, Some(1_800_000_060));
     assert_eq!(device.display_refreshes, 2);

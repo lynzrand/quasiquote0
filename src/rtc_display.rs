@@ -63,3 +63,27 @@ pub fn save(digest: Option<Sha256Digest>) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_digest_rejects_empty_corrupt_and_wrong_version_records() {
+        let digest = core::array::from_fn(|index| index as u8);
+        let saved = SavedDisplay::new(digest);
+        assert_eq!(core::mem::size_of::<SavedDisplay>(), 48);
+        assert_eq!(saved.digest(), Some(digest));
+        assert_eq!(SavedDisplay::EMPTY.digest(), None);
+        for byte in 0..digest.len() {
+            let mut corrupt = saved;
+            corrupt.composed[byte] ^= 1;
+            assert_eq!(corrupt.digest(), None);
+        }
+        let mut old_version = saved;
+        old_version.magic_version ^= 1;
+        assert_eq!(old_version.digest(), None);
+        let mut bad_checksum = saved;
+        bad_checksum.checksum ^= 1;
+        assert_eq!(bad_checksum.digest(), None);
+    }
+}

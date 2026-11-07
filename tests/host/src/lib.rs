@@ -27,6 +27,8 @@ pub mod power_policy;
 pub mod pull_schedule;
 #[path = "../../../src/refresh_policy.rs"]
 pub mod refresh_policy;
+#[path = "../../../src/rtc_display.rs"]
+pub mod rtc_display;
 #[path = "../../../src/status_bar.rs"]
 pub mod status_bar;
 #[path = "../../../src/status_icons.rs"]

@@ -176,6 +176,22 @@ pub fn differential() -> [&'static [u8]; 5] {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "experimental-fast")]
+    #[test]
+    fn fast_profile_has_one_short_directional_pulse_and_synchronized_idle_tables() {
+        let tables = differential();
+        for (index, (table, length)) in tables.iter().zip([80, 56, 80, 80, 80]).enumerate() {
+            assert_eq!(table.len(), length);
+            let packed = match index {
+                2 => 0x80,
+                3 => 0x40,
+                _ => 0,
+            };
+            assert_eq!(&table[..8], &[1, packed, 48, 1, 1, 1, 1, 1]);
+            assert!(table[8..].iter().all(|&byte| byte == 0));
+        }
+    }
+
     #[test]
     fn generated_register_tables_match_the_stock_firmware_capture() {
         // Preserve the working waveform while replacing opaque constants.

@@ -30,6 +30,10 @@ jobs:
         run: |
           cargo +stable test --locked --manifest-path tests/host/Cargo.toml --target x86_64-unknown-linux-gnu --target-dir target/host-tests
           cargo +stable clippy --locked --manifest-path tests/host/Cargo.toml --target x86_64-unknown-linux-gnu --target-dir target/host-tests --all-targets -- -D warnings
+          cargo +stable test --locked --manifest-path tests/host/Cargo.toml --target x86_64-unknown-linux-gnu --target-dir target/host-tests --features experimental-differential
+          cargo +stable clippy --locked --manifest-path tests/host/Cargo.toml --target x86_64-unknown-linux-gnu --target-dir target/host-tests --features experimental-differential --all-targets -- -D warnings
+          cargo +stable test --locked --manifest-path tests/host/Cargo.toml --target x86_64-unknown-linux-gnu --target-dir target/host-tests --features experimental-fast
+          cargo +stable clippy --locked --manifest-path tests/host/Cargo.toml --target x86_64-unknown-linux-gnu --target-dir target/host-tests --features experimental-fast --all-targets -- -D warnings
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
       - name: Install test browser
@@ -45,7 +49,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       matrix:
-        variant: [default, experimental-partial]
+        variant: [default, experimental-partial, experimental-differential, experimental-fast]
     steps:
       - uses: actions/checkout@v6
       - name: Install ESP-IDF build prerequisites
@@ -60,7 +64,7 @@ jobs:
           if [ "$VARIANT" = default ]; then
             cargo build --locked --bin quasiquote0
           else
-            cargo build --locked --bin quasiquote0 --features experimental-partial
+            cargo build --locked --bin quasiquote0 --features "$VARIANT"
           fi
       - name: Package and enforce OTA slot size
         env:

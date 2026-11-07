@@ -78,6 +78,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn identical_pixels_neither_create_a_baseline_nor_reset_the_cleanup_budget() {
+        let mut tracker = RefreshTracker::default();
+        let key = RefreshKey::new([1; 32], true, 0);
+        tracker.unchanged(key);
+        assert!(!tracker.is_due(key, 0));
+        assert!(!tracker.can_refresh_differential());
+        assert!(!tracker.can_refresh_status_only(key));
+        tracker.succeeded(key);
+        for minute in 1..=4 {
+            tracker.partial_succeeded(RefreshKey::new([1; 32], true, minute * 60));
+        }
+        let unchanged = RefreshKey::new([2; 32], true, 300);
+        tracker.unchanged(unchanged);
+        assert!(!tracker.is_due(unchanged, 0));
+        assert!(!tracker.can_refresh_differential());
+        assert!(!tracker.can_refresh_status_only(unchanged));
+    }
+
+    #[test]
     fn minute_heartbeat_and_content_change_each_schedule_a_refresh() {
         let mut tracker = RefreshTracker::default();
         let first = RefreshKey::new([1; 32], true, 120);
