@@ -24,6 +24,7 @@ pub mod power_policy;
 pub mod pull;
 pub mod pull_schedule;
 pub mod refresh_policy;
+pub mod rtc_display;
 pub mod rtc_schedule;
 pub mod status_bar;
 pub mod status_icons;

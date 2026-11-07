@@ -2,9 +2,9 @@
 use crate::{
     device::Device,
     display::Epd,
-    frame::digest_hex,
+    frame::{digest_hex, parse_digest, Sha256Digest},
     refresh_policy::{RefreshKey, RefreshTracker},
-    rtc_schedule,
+    rtc_display, rtc_schedule,
     status_bar::StatusBar,
     wall_clock,
 };
@@ -13,6 +13,7 @@ use std::sync::Mutex;
 pub(super) struct Renderer<'d> {
     display: Option<Epd<'d>>,
     refreshes: RefreshTracker,
+    last_composed: Option<Sha256Digest>,
 }
 
 impl<'d> Renderer<'d> {
@@ -20,6 +21,7 @@ impl<'d> Renderer<'d> {
         let mut renderer = Self {
             display,
             refreshes: RefreshTracker::default(),
+            last_composed: rtc_display::load(),
         };
         // A retained, unchanged image with its bar disabled needs no timer-wake
         // repaint. Partial refresh baselines remain strictly per boot.
@@ -33,12 +35,12 @@ impl<'d> Renderer<'d> {
                 {
                     if let Ok(content) = device.desired_digest() {
                         if state.displayed_content_sha256.as_deref() == Some(&digest_hex(&content))
+                            && renderer.last_composed.is_none()
                         {
-                            renderer.refreshes.succeeded(RefreshKey::new(
-                                content,
-                                false,
-                                wall_clock::unix_seconds(),
-                            ));
+                            renderer.last_composed = state
+                                .displayed_composed_sha256
+                                .as_deref()
+                                .and_then(|digest| parse_digest(digest).ok());
                         }
                     }
                 }
@@ -84,42 +86,54 @@ impl<'d> Renderer<'d> {
             status.overlay(&mut frame);
         }
         let composed = frame.sha256();
-        let projected = frame.project();
-        let status_only =
-            cfg!(feature = "experimental-partial") && refreshes.can_refresh_status_only(key);
+        let unchanged = self.last_composed == Some(composed);
         let started = rtc_schedule::now_ms();
         let mut mode = "full";
         let mut incremental = None;
-        if status_only {
-            mode = if cfg!(feature = "experimental-fast") {
-                "fast-window"
-            } else if cfg!(feature = "experimental-differential") {
-                "partial-differential"
-            } else {
-                "partial-window"
-            };
-            incremental = Some(display.display_status_strip(&projected));
-        }
-        #[cfg(feature = "experimental-differential")]
-        if !status_only && refreshes.can_refresh_differential() {
-            mode = if cfg!(feature = "experimental-fast") {
-                "fast-differential"
-            } else {
-                "differential"
-            };
-            incremental = Some(display.display_differential(&projected, false));
-        }
         let mut partial_error = None;
-        let transfer = match incremental {
-            Some(Ok(())) => Ok(()),
-            Some(Err(error)) => {
-                partial_error = Some(error.to_owned());
-                mode = "full-fallback";
-                display.display(&projected)
+        let transfer = if unchanged {
+            mode = "unchanged";
+            Ok(())
+        } else {
+            self.last_composed = None;
+            rtc_display::save(None);
+            let projected = frame.project();
+            let status_only =
+                cfg!(feature = "experimental-partial") && refreshes.can_refresh_status_only(key);
+            if status_only {
+                mode = if cfg!(feature = "experimental-fast") {
+                    "fast-window"
+                } else if cfg!(feature = "experimental-differential") {
+                    "partial-differential"
+                } else {
+                    "partial-window"
+                };
+                incremental = Some(display.display_status_strip(&projected));
             }
-            None => display.display(&projected),
+            #[cfg(feature = "experimental-differential")]
+            if !status_only && refreshes.can_refresh_differential() {
+                mode = if cfg!(feature = "experimental-fast") {
+                    "fast-differential"
+                } else {
+                    "differential"
+                };
+                incremental = Some(display.display_differential(&projected, false));
+            }
+            match incremental {
+                Some(Ok(())) => Ok(()),
+                Some(Err(error)) => {
+                    partial_error = Some(error.to_owned());
+                    mode = "full-fallback";
+                    display.display(&projected)
+                }
+                None => display.display(&projected),
+            }
         };
-        let elapsed = rtc_schedule::now_ms().saturating_sub(started);
+        let elapsed = if unchanged {
+            0
+        } else {
+            rtc_schedule::now_ms().saturating_sub(started)
+        };
         let result = transfer.map_err(str::to_owned).and_then(|()| {
             device
                 .lock()
@@ -130,22 +144,29 @@ impl<'d> Renderer<'d> {
                     env!("CARGO_PKG_VERSION"),
                     seconds,
                     key.status_bar,
+                    !unchanged,
                 )
                 .map_err(|error| error.to_string())
         });
         match result {
             Ok(()) => {
-                if incremental.is_some() && partial_error.is_none() {
+                if unchanged {
+                    refreshes.unchanged(key);
+                } else if incremental.is_some() && partial_error.is_none() {
                     refreshes.partial_succeeded(key);
                 } else {
                     refreshes.succeeded(key);
                 }
+                self.last_composed = Some(composed);
+                rtc_display::save(Some(composed));
                 let mut device = device.lock().unwrap();
                 device.display_refresh_mode = mode;
                 device.display_refresh_ms = elapsed;
                 device.partial_refresh_error = partial_error;
             }
             Err(error) => {
+                self.last_composed = None;
+                rtc_display::save(None);
                 refreshes.failed(rtc_schedule::now_ms());
                 device.lock().unwrap().display_error = Some(error);
             }

@@ -233,6 +233,8 @@ impl Device {
         self.store.load_frame(&digest).map(Some).map_err(Into::into)
     }
 
+    /// Acknowledge confirmed pixels. `refreshed` counts a physical transaction;
+    /// identical composed pixels can update metadata without driving the panel.
     pub fn mark_displayed(
         &mut self,
         content: &Sha256Digest,
@@ -240,6 +242,7 @@ impl Device {
         firmware_version: &str,
         clock_seconds: i64,
         status_bar: bool,
+        refreshed: bool,
     ) -> Result<(), DeviceError> {
         // Heartbeats update the acknowledged status in RAM. Persist only a
         // content/firmware transition, avoiding one LittleFS write per minute.
@@ -257,7 +260,9 @@ impl Device {
         }
         self.state = next;
         self.display_clock = Some(clock_seconds);
-        self.display_refreshes = self.display_refreshes.saturating_add(1);
+        if refreshed {
+            self.display_refreshes = self.display_refreshes.saturating_add(1);
+        }
         self.display_error = None;
         Ok(())
     }

@@ -24,6 +24,8 @@ pub struct RefreshTracker {
     displayed: Option<RefreshKey>,
     retry_after_ms: u64,
     partials: u8,
+    // Acknowledging identical pixels does not establish a controller baseline.
+    has_baseline: bool,
 }
 
 impl RefreshTracker {
@@ -35,17 +37,24 @@ impl RefreshTracker {
         self.displayed = Some(key);
         self.retry_after_ms = 0;
         self.partials = 0;
+        self.has_baseline = true;
+    }
+
+    pub fn unchanged(&mut self, key: RefreshKey) {
+        self.displayed = Some(key);
+        self.retry_after_ms = 0;
     }
 
     pub fn can_refresh_status_only(&self, key: RefreshKey) -> bool {
-        self.partials < 4
+        self.has_baseline
+            && self.partials < 4
             && self.displayed.is_some_and(|previous| {
                 previous.status_bar && key.status_bar && previous.content == key.content
             })
     }
 
     pub fn can_refresh_differential(&self) -> bool {
-        self.partials < 4 && self.displayed.is_some()
+        self.has_baseline && self.partials < 4 && self.displayed.is_some()
     }
 
     pub fn partial_succeeded(&mut self, key: RefreshKey) {
@@ -59,6 +68,7 @@ impl RefreshTracker {
         // attempt must establish a full baseline before another window.
         self.displayed = None;
         self.partials = 0;
+        self.has_baseline = false;
         self.retry_after_ms = now_ms.saturating_add(5_000);
     }
 }
