@@ -198,17 +198,22 @@ impl Device {
         });
         if let Some(validators) = validators {
             next.pull = validators;
-            self.persist_state(next)?;
-            self.last_pull_error = None;
-        } else {
-            self.persist_state(next)?;
+        } else if next.desired != self.state.desired {
+            // A different local image is not the response these validators
+            // describe. Keep them only when re-uploading the same content.
+            next.pull = PullValidators::default();
         }
+        self.persist_state(next)?;
         self.store.remove_unreferenced_frames(&self.state)?;
         Ok(())
     }
 
     pub fn record_pull_error(&mut self, error: String) {
         self.last_pull_error = Some(error.chars().take(160).collect());
+    }
+
+    pub fn record_pull_success(&mut self) {
+        self.last_pull_error = None;
     }
 
     fn persist_state(&mut self, next: PersistentState) -> Result<(), DeviceError> {

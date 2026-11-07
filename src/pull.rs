@@ -141,5 +141,7 @@ pub fn update(device: &std::sync::Mutex<crate::device::Device>) -> Result<(), St
         }
         204 | 304 => Ok(()),
         status => Err(format!("HTTP pull returned status {status}")),
-    }
+    }?;
+    device.lock().unwrap().record_pull_success();
+    Ok(())
 }
