@@ -13,6 +13,8 @@ before flashing.
   Preview, fit or crop, adjust the threshold, and optionally dither before uploading.
 - **A minute status clock:** battery, Wi-Fi, USB, and Bluetooth indicators beside
   your image. Time synchronizes through NTP and survives deep sleep.
+- **Short-waveform refresh:** the same short pulse serves startup, image changes,
+  and status updates; identical composed images skip refreshing.
 - **Battery operation:** wake for status updates and scheduled content pulls;
   keep Wi-Fi and the browser UI available while USB-powered.
 - **BTHome v2 telemetry:** broadcast battery and connection state while awake.
@@ -106,9 +108,10 @@ settings. USB setup also remains available if saved network credentials stop wor
 - Battery percentage is an estimate. USB presence is reported as charging in
   BTHome; it is not a measurement of charge current. Battery life is unmeasured.
 - Keep a backup of your images and settings. This firmware is under development.
-- Full refresh is the default. Optional [status-strip partial refresh](docs/PARTIAL_REFRESH.md)
-  is experimental, has no measured speed benefit, and uses full refresh after
-  each deep-sleep boot.
+- Clock-only updates stay in the status strip while a framebuffer baseline is
+  available; idle images do not cause periodic full-screen refreshes. A changed
+  image after deep sleep needs a full-screen short-waveform baseline. See the
+  [refresh profiles and hardware results](docs/PARTIAL_REFRESH.md).
 - BLE provides non-connectable BTHome advertisements. There is no GATT control
   service. The firmware does not program the case's passive NFC tag.
 

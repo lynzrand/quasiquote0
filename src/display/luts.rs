@@ -131,6 +131,29 @@ pub fn lut_24() -> &'static [u8] {
     &BLACK
 }
 
+pub fn stock() -> [&'static [u8]; 5] {
+    [lut_20(), lut_21(), lut_22(), lut_23(), lut_24()]
+}
+
+/// A full destination write must drive both possible old states to the target.
+/// This establishes a baseline after startup/sleep without inventing old pixels.
+pub fn full() -> [&'static [u8]; 5] {
+    #[cfg(feature = "experimental-fast")]
+    {
+        [
+            &FAST_ZERO,
+            &FAST_WHITE[..56],
+            &FAST_WHITE,
+            &FAST_BLACK,
+            &FAST_BLACK,
+        ]
+    }
+    #[cfg(not(feature = "experimental-fast"))]
+    {
+        stock()
+    }
+}
+
 /// Zero source-drive levels for unchanged pixels, with the selected timings.
 /// The bytes match VCOM's table, but selector 00 means 0 V for pixel outputs.
 /// R21 takes the first 56 bytes; R24 takes all 80. Keeping the timing fields

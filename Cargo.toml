@@ -11,7 +11,8 @@ rust-version = "1.82"
 opt-level = "s"
 
 [features]
-# Opt-in hardware experiment; the normal firmware keeps its proven full refresh.
+# Use the accepted short waveform for normal builds. Disable defaults for controls.
+default = ["experimental-fast"]
 experimental-partial = []
 # Keep the stock window experiment available as a control for this LUT change.
 experimental-differential = ["experimental-partial"]

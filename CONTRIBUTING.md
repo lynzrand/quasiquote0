@@ -43,10 +43,13 @@ cargo build --locked --bin quasiquote0
 ```
 
 The application ELF is `target/riscv32imc-esp-espidf/debug/quasiquote0`.
-For the optional status-window experiment, add `--features experimental-partial`.
-Use `--features experimental-differential` to compare zero source-drive levels
-for unchanged pixels against that stock-waveform control.
-Use `--features experimental-fast` for short destination pulses with cold resets.
+Normal builds use the accepted short waveform for all normal refreshes,
+including startup and full-frame baselines. Stock conditioning is reserved for
+error recovery. Build with `--no-default-features` for the original full-refresh
+control. Add `--features experimental-partial` or
+`--features experimental-differential` to that control command to compare the
+earlier status-window or stock-timing differential profiles. The existing
+`experimental-fast` feature remains enabled by default.
 Its hardware results and limitations are in [PARTIAL_REFRESH.md](docs/PARTIAL_REFRESH.md).
 
 ### First installation over serial
@@ -201,9 +204,9 @@ To run a local headless browser instead, install it with
 `QUOTE0_LOCAL_BROWSER=1 pnpm test:browser`. Without either browser option,
 the browser test is skipped; that is not a passing UI check.
 
-GitHub Actions runs these host and browser checks, then builds the default,
-`experimental-partial`, `experimental-differential`, and `experimental-fast`
-firmware. Each successful
+GitHub Actions runs these host and browser checks, then builds the default short
+profile and the stock, `experimental-partial`, and `experimental-differential`
+controls with defaults disabled. Each successful
 build produces a size-checked application image and SHA-256 file as a workflow
 artifact. These are OTA images;
 first installation still requires the matching bootloader and partition table.

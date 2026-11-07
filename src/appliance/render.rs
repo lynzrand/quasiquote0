@@ -88,7 +88,11 @@ impl<'d> Renderer<'d> {
         let composed = frame.sha256();
         let unchanged = self.last_composed == Some(composed);
         let started = rtc_schedule::now_ms();
-        let mut mode = "full";
+        let mut mode = if cfg!(feature = "experimental-fast") {
+            "fast-full"
+        } else {
+            "full"
+        };
         let mut incremental = None;
         let mut partial_error = None;
         let transfer = if unchanged {
@@ -124,9 +128,16 @@ impl<'d> Renderer<'d> {
                 Some(Err(error)) => {
                     partial_error = Some(error.to_owned());
                     mode = "full-fallback";
-                    display.display(&projected)
+                    display.recover(&projected)
                 }
-                None => display.display(&projected),
+                None => match display.display(&projected) {
+                    Err(error) if cfg!(feature = "experimental-fast") => {
+                        partial_error = Some(error.to_owned());
+                        mode = "full-fallback";
+                        display.recover(&projected)
+                    }
+                    result => result,
+                },
             }
         };
         let elapsed = if unchanged {

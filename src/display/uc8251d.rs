@@ -228,22 +228,15 @@ impl<'d> Epd<'d> {
         self.command(0x04)?;
         FreeRtos::delay_ms(100);
         self.wait_idle(5_000)?;
-        self.load_stock_luts()?;
         self.sleeping = false;
         Ok(())
     }
 
-    fn load_stock_luts(&mut self) -> Result<(), &'static str> {
-        self.command(0x20)?;
-        self.data(luts::lut_20())?;
-        self.command(0x21)?;
-        self.data(luts::lut_21())?;
-        self.command(0x22)?;
-        self.data(luts::lut_22())?;
-        self.command(0x23)?;
-        self.data(luts::lut_23())?;
-        self.command(0x24)?;
-        self.data(luts::lut_24())?;
+    fn load_luts(&mut self, tables: [&[u8]; 5]) -> Result<(), &'static str> {
+        for (command, table) in (0x20..=0x24).zip(tables) {
+            self.command(command)?;
+            self.data(table)?;
+        }
         Ok(())
     }
 
@@ -257,8 +250,18 @@ impl<'d> Epd<'d> {
     /// Chunks follow the actual frame length, including its final 248-byte
     /// tail; sending a full 256-byte tail corrupts the next command.
     pub fn display(&mut self, frame: &Frame) -> Result<(), &'static str> {
+        self.display_full(frame, luts::full())
+    }
+
+    /// Restore a known image with the stock conditioning waveform after failure.
+    pub fn recover(&mut self, frame: &Frame) -> Result<(), &'static str> {
+        self.display_full(frame, luts::stock())
+    }
+
+    fn display_full(&mut self, frame: &Frame, tables: [&[u8]; 5]) -> Result<(), &'static str> {
         let result = (|| {
             self.power_on()?;
+            self.load_luts(tables)?;
             let old = [0u8; 256];
             self.command(0x10)?; // old image
             for chunk in frame.as_bytes().chunks(old.len()) {
@@ -293,6 +296,7 @@ impl<'d> Epd<'d> {
     pub fn display_status_strip(&mut self, frame: &Frame) -> Result<(), &'static str> {
         let result = (|| {
             self.power_on()?;
+            self.load_luts(luts::stock())?;
             self.command(0x91)?; // PTIN
             self.command(0x90)?; // PTL
             self.data(&super::status_window::COMMAND)?;
@@ -350,10 +354,7 @@ impl<'d> Epd<'d> {
             self.power_on()?;
             // The original differential keeps B->W/W->B stock and only
             // zeroes W->W/B->B. The fast experiment also shortens all timings.
-            for (command, table) in (0x20..=0x24).zip(luts::differential()) {
-                self.command(command)?;
-                self.data(table)?;
-            }
+            self.load_luts(luts::differential())?;
             if status_only {
                 self.command(0x91)?; // PTIN
                 self.command(0x90)?; // PTL

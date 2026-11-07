@@ -19,9 +19,15 @@ The device overlays a 16-column status strip on the **right edge**
 (columns 280–295) whenever `display.status_bar` is enabled; producers
 should treat that region as reserved. The whole strip is recomposed each
 minute: battery, Wi-Fi, USB power, Bluetooth advertising, and a bottom `HH:MM`
-clock in UTC+8. The plug icon indicates USB power, not measured charging.
-The current implementation refreshes the full panel, preserving the retained
-content pixels. Disabling the strip disables minute-only refreshes and wakes;
+clock in UTC+8. The clock uses upright hours above minutes, separated by a
+static colon. Battery, Wi-Fi, plug, and Bluetooth artwork is also upright;
+Wi-Fi connecting, disconnected, connected, and failed states have distinct
+glyphs. The plug icon indicates USB power, not measured charging.
+With a framebuffer baseline, clock-only updates refresh the status window.
+They do not schedule periodic full-screen redraws of unchanged content.
+Identical composed pixels skip the panel transfer entirely. A changed image
+after deep sleep establishes a full-screen baseline with the short waveform.
+Disabling the strip disables minute-only refreshes and wakes;
 critical battery suppresses the heartbeat even when the strip is enabled.
 
 ## 1. Management on USB power
