@@ -2,6 +2,8 @@
 pub mod activity;
 #[path = "../../../src/backup.rs"]
 pub mod backup;
+#[path = "../../../src/battery/samples.rs"]
+pub mod battery_samples;
 #[path = "../../../src/bootstrap_line.rs"]
 pub mod bootstrap_line;
 #[path = "../../../src/bthome.rs"]
