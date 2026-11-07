@@ -239,6 +239,52 @@ fn validators_follow_the_pull_resource_and_credential_context() {
     assert_eq!(root.device().pull_snapshot().1, Default::default());
 }
 
+#[test]
+fn missing_or_corrupt_content_is_pulled_without_cache_validators() {
+    // Review reproduced an endless sequence of successful 304s after the
+    // retained file disappeared. Both validators require verified local bytes.
+    let root = Scratch::new();
+    let mut device = root.device();
+    let frame = Frame::white();
+    let digest = publish(&mut device, &frame).unwrap();
+    let validators = quasiquote0_host_tests::store::PullValidators {
+        etag: Some("\"v1\"".into()),
+        last_modified: Some("Wed, 21 Oct 2015 07:28:00 GMT".into()),
+    };
+    device
+        .commit_pulled_frame(digest, validators.clone())
+        .unwrap();
+    assert_eq!(device.pull_snapshot().1, validators);
+    let path = root.0.join(format!("frames/{}.bin", frame.sha256_hex()));
+    fs::remove_file(&path).unwrap();
+    assert_eq!(device.pull_snapshot().1, Default::default());
+    assert!(device
+        .load_desired_frame()
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("missing"));
+
+    fs::write(&path, Frame::black().as_bytes()).unwrap();
+    assert_eq!(device.pull_snapshot().1, Default::default());
+    assert!(device
+        .load_desired_frame()
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("digest"));
+
+    // Re-uploading the same content repairs the local file and makes the
+    // existing remote validators usable again without a flash metadata write.
+    let state_path = root.0.join("state/device.v1.json");
+    let saved_state = fs::read(&state_path).unwrap();
+    let mut writer = device.begin_frame_write(digest).unwrap();
+    writer.write_all(frame.as_bytes()).unwrap();
+    writer.finish().unwrap();
+    assert_eq!(device.pull_snapshot().1, validators);
+    assert_eq!(fs::read(state_path).unwrap(), saved_state);
+}
+
 fn backup() -> Backup {
     let mut config = quasiquote0_host_tests::config::Config::default();
     config.wifi.ssid = "restored-network".into();
