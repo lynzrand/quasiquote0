@@ -115,3 +115,43 @@ pub fn lut_24() -> &'static [u8] {
     &BLACK
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_register_tables_match_the_stock_firmware_capture() {
+        // Preserve the working waveform while replacing opaque constants.
+        // Captured at VA 0x3c0f37a4 in the original firmware; SHA-256 of the
+        // 376 transmitted bytes is 03bbfbf8ebf77e17b633b5c7515d2b112b7bd203a4ebcb415d7182ba01dec34e.
+        let stock: [u8; 400] = include!("luts_data.rs");
+        let tables = [lut_20(), lut_21(), lut_22(), lut_23(), lut_24()];
+        let mut offset = 0;
+        for (index, (table, length)) in tables.iter().zip([80, 56, 80, 80, 80]).enumerate() {
+            assert_eq!(table.len(), length, "register 0x{:02x}", 0x20 + index);
+            assert_eq!(
+                *table,
+                &stock[offset..offset + length],
+                "register 0x{:02x}",
+                0x20 + index
+            );
+            offset += length;
+        }
+        // The last 24 captured bytes are adjacent firmware data, not LUT data.
+        assert_eq!(offset, 376);
+    }
+
+    #[test]
+    fn decoded_stock_timings_match_the_reconstructed_sequence() {
+        let frames = TIMING.each_ref().map(|group| {
+            u32::from(group.repeats)
+                * ((u32::from(group.frames[0]) + u32::from(group.frames[1]))
+                    * u32::from(group.state_repeats[0])
+                    + (u32::from(group.frames[2]) + u32::from(group.frames[3]))
+                        * u32::from(group.state_repeats[1]))
+        });
+        assert_eq!(frames, [20, 30, 76, 72]);
+        // The documented two-frame ending makes 200 frames at nominal 160 Hz.
+        assert_eq!((frames.iter().sum::<u32>() + 2) * 1_000 / 160, 1_250);
+    }
+}
