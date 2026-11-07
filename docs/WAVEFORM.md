@@ -71,11 +71,13 @@ alternating source rails, while later groups include longer pulses of both
 polarities. Their optical effect depends on the panel and cannot be calculated
 from digital selectors alone.
 
-The existing driver writes a zero-filled old-image plane. A future differential
-profile would also need correct previous-image data and separate unchanged-pixel
+The stock driver writes a zero-filled old-image plane. A differential
+profile also needs correct previous-image data and separate unchanged-pixel
 patterns. Changing only that plane while keeping these identical pattern pairs
 would not make unchanged pixels quiet. The [status-window experiment](PARTIAL_REFRESH.md)
-limits the affected area while retaining this waveform.
+limits the affected area for clock updates; its optional differential build
+also compares complete main images. Both use the changed-pixel sequences above
+and replace only unchanged-pixel levels with zero source drive.
 
 ## Byte-for-byte reference
 

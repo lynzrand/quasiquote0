@@ -60,6 +60,17 @@ status strip from that source. Content, layout, and firmware transitions persist
 display acknowledgement; minute ticks update acknowledgement in RAM without
 rewriting flash. A partial-window baseline and budget are valid only within the
 current boot. Full refresh remains the default.
+The differential experiment also retains the last successfully displayed
+5,624-byte native frame on the heap in the panel driver, because controller
+RAM is lost during power-off. It supports both 304-byte status windows and
+complete main-image changes. A transfer failure invalidates the baseline;
+sleep after success preserves it for the next explicit old-plane upload.
+Identical composed pixels are acknowledged without a physical refresh. A
+versioned, checksummed 48-byte RTC record carries the last confirmed digest
+through deep sleep, without retaining a differential framebuffer baseline.
+The fast experiment uses short destination pulses while retaining the proven
+cold reset and power cycle. Digital standby was removed after a failed optical
+trial, so controller state is never assumed to survive the previous transaction.
 
 OTA streams directly to the inactive partition. After length, digest, and SDK
 image validation, the pending marker is persisted and the partition is selected.
