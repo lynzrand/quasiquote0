@@ -70,6 +70,40 @@ fn full_mode() -> &'static str {
 }
 
 #[test]
+fn failed_barless_repaint_requires_a_baseline_after_timer_wake() {
+    use std::{fs, sync::Mutex};
+    // Review found that a flash acknowledgement overrode the invalidated RTC
+    // record after failure, incorrectly skipping a possibly damaged image.
+    let root = std::env::temp_dir().join(format!("quote0-barless-retry-{}", std::process::id()));
+    let mut device = device::Device::open_at(root.clone()).unwrap();
+    let mut config = device.config().clone();
+    config.display.status_bar = false;
+    device.replace_config(config).unwrap();
+    let device = Mutex::new(device);
+    let status = status_bar::StatusBar::default();
+    let mut first = render::Renderer::new(Some(panel()));
+    first.refresh(&device, status);
+    assert_eq!(device.lock().unwrap().display_refreshes, 1);
+
+    let mut failed = render::Renderer::new(Some(panel()));
+    PANEL.with_borrow_mut(|panel| panel.busy_at = Some(0x12));
+    failed.refresh(&device, status);
+    assert!(device.lock().unwrap().display_error.is_some());
+    PANEL.with_borrow(|panel| assert!(panel.retained_composed.is_none()));
+    drop(device);
+
+    let device = Mutex::new(device::Device::open_at(root.clone()).unwrap());
+    let display = panel();
+    PANEL.with_borrow_mut(|panel| panel.deep_sleep_wake = true);
+    let mut wake = render::Renderer::new(Some(display));
+    wake.refresh(&device, status);
+    assert_eq!(device.lock().unwrap().display_refresh_mode, full_mode());
+    assert_eq!(device.lock().unwrap().display_refreshes, 1);
+    PANEL.with_borrow(|panel| assert!(panel.commands.contains(&0x12)));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn identical_composed_pixels_skip_spi_within_a_boot_and_after_deep_sleep() {
     use std::{fs, io::Write, sync::Mutex};
     let root = std::env::temp_dir().join(format!("quote0-unchanged-{}", std::process::id()));
