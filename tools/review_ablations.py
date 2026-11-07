@@ -38,6 +38,8 @@ ABLATIONS = [
     ("retained-validator-check", "src/device.rs", "self.backup_frame().is_ok_and(|frame| frame.is_some())", "true"),
     ("validator-context-reset", "src/device.rs",
      "config.pull.url != self.config.pull.url\n            || config.pull.bearer_token != self.config.pull.bearer_token", "false"),
+    ("manual-validator-reset", "src/device.rs", "else if next.desired != self.state.desired", "else if false"),
+    ("pull-success-acknowledgement", "src/pull.rs", "device.lock().unwrap().record_pull_success();", "// success acknowledgement omitted"),
     ("retained-digest-check", "src/store.rs", "if actual != *digest {", "if false {"),
     ("upload-digest-check", "src/store.rs", "if self.expected.is_some_and(|expected| actual != expected) {", "if false {"),
     ("durable-before-ram", "src/device.rs", "self.store.save_state(&next)?;\n        self.state = next;", "self.state = next;\n        self.store.save_state(&self.state)?;"),

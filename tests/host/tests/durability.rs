@@ -240,6 +240,29 @@ fn validators_follow_the_pull_resource_and_credential_context() {
 }
 
 #[test]
+fn different_manual_images_clear_remote_validators_but_same_image_reuploads_keep_them() {
+    // Review found that replacing a pulled frame locally retained its remote
+    // ETag, so subsequent 304s could keep the wrong manual image indefinitely.
+    let root = Scratch::new();
+    let mut device = root.device();
+    let original = Frame::white();
+    let digest = publish(&mut device, &original).unwrap();
+    let validators = quasiquote0_host_tests::store::PullValidators {
+        etag: Some("remote-white-v1".into()),
+        last_modified: Some("yesterday".into()),
+    };
+    device
+        .commit_pulled_frame(digest, validators.clone())
+        .unwrap();
+    publish(&mut device, &original).unwrap();
+    assert_eq!(device.pull_snapshot().1, validators);
+    publish(&mut device, &Frame::black()).unwrap();
+    assert_eq!(device.pull_snapshot().1, Default::default());
+    drop(device);
+    assert_eq!(root.device().pull_snapshot().1, Default::default());
+}
+
+#[test]
 fn missing_or_corrupt_content_is_pulled_without_cache_validators() {
     // Review reproduced an endless sequence of successful 304s after the
     // retained file disappeared. Both validators require verified local bytes.
