@@ -9,6 +9,7 @@ pub struct Panel {
     pub data: bool,
     pub command: u8,
     pub busy_at: Option<u8>,
+    pub spi_error_once: Option<u8>,
     pub commands: Vec<u8>,
     pub payloads: Vec<(u8, Vec<u8>)>,
     pub elapsed_ms: u64,
@@ -199,6 +200,10 @@ pub unsafe fn spi_device_polling_transmit(
     PANEL.with_borrow_mut(|panel| {
         if !panel.data {
             let command = *((*transfer).__bindgen_anon_1.tx_buffer.cast::<u8>());
+            if panel.spi_error_once == Some(command) {
+                panel.spi_error_once = None;
+                return -1;
+            }
             panel.command = command;
             panel.commands.push(command);
             panel.payloads.push((command, Vec::new()));
@@ -214,6 +219,6 @@ pub unsafe fn spi_device_polling_transmit(
                 .1
                 .extend_from_slice(bytes);
         }
-    });
-    0
+        0
+    })
 }

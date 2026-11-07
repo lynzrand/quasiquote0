@@ -71,6 +71,14 @@ fn panel() -> Epd<'static> {
     .unwrap()
 }
 
+fn full_mode() -> &'static str {
+    if cfg!(feature = "experimental-fast") {
+        "fast-full"
+    } else {
+        "full"
+    }
+}
+
 #[test]
 fn identical_composed_pixels_skip_spi_within_a_boot_and_after_deep_sleep() {
     use std::{fs, io::Write, sync::Mutex};
@@ -129,7 +137,7 @@ fn identical_composed_pixels_skip_spi_within_a_boot_and_after_deep_sleep() {
     PANEL.with_borrow(|panel| assert!(panel.commands.is_empty()));
 
     // Skipping on wake has no previous-frame buffer. The first actual pixel
-    // change must establish a stock baseline, not attempt a differential.
+    // change must establish a full baseline, not attempt a differential.
     renderer.refresh(
         &device,
         status_bar::StatusBar {
@@ -137,7 +145,7 @@ fn identical_composed_pixels_skip_spi_within_a_boot_and_after_deep_sleep() {
             ..status
         },
     );
-    assert_eq!(device.lock().unwrap().display_refresh_mode, "full");
+    assert_eq!(device.lock().unwrap().display_refresh_mode, full_mode());
     assert_eq!(device.lock().unwrap().display_refreshes, 2);
     assert!(device.lock().unwrap().partial_refresh_error.is_none());
 
@@ -169,14 +177,14 @@ fn identical_composed_pixels_skip_spi_within_a_boot_and_after_deep_sleep() {
         device.commit_frame(writer.finish().unwrap()).unwrap();
     }
     renderer.refresh(&device, valid_status);
-    assert_eq!(device.lock().unwrap().display_refresh_mode, "full");
+    assert_eq!(device.lock().unwrap().display_refresh_mode, full_mode());
     assert_eq!(device.lock().unwrap().display_refreshes, 3);
     fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(feature = "experimental-fast")]
 #[test]
-fn fast_refreshes_cold_initialize_and_cleanup_restores_stock_luts() {
+fn fast_refreshes_cold_initialize_and_full_writes_use_short_destination_luts() {
     let mut display = panel();
     display.display(&Frame::white()).unwrap();
     PANEL.with_borrow_mut(|panel| {
@@ -201,9 +209,75 @@ fn fast_refreshes_cold_initialize_and_cleanup_restores_stock_luts() {
     });
     display.display(&Frame::white()).unwrap();
     PANEL.with_borrow(|panel| {
-        assert_eq!(last_payload(panel, 0x21), luts::lut_21());
-        assert_eq!(last_payload(panel, 0x24), luts::lut_24());
+        for (command, expected) in (0x20..=0x24).zip(luts::full()) {
+            assert_eq!(last_payload(panel, command), expected);
+        }
+        // Unchanged pixels are driven to their destination in a full baseline.
+        assert_eq!(last_payload(panel, 0x21)[1], 0x80);
+        assert_eq!(last_payload(panel, 0x24)[1], 0x40);
     });
+    display.recover(&Frame::white()).unwrap();
+    PANEL.with_borrow(|panel| {
+        for (command, expected) in (0x20..=0x24).zip(luts::stock()) {
+            assert_eq!(last_payload(panel, command), expected);
+        }
+    });
+}
+
+#[cfg(feature = "experimental-fast")]
+#[test]
+fn first_full_write_uses_short_destination_pulses_for_both_colors_without_a_baseline() {
+    for frame in [Frame::white(), Frame::black()] {
+        let mut display = panel();
+        display.display(&frame).unwrap();
+        PANEL.with_borrow(|panel| {
+            assert!(!panel.powered);
+            assert_eq!(last_payload(panel, 0x10).len(), frame.as_bytes().len());
+            assert!(last_payload(panel, 0x10).iter().all(|&byte| byte == 0));
+            assert_eq!(last_payload(panel, 0x13), frame.as_bytes());
+            for (command, packed) in [(0x21, 0x80), (0x22, 0x80), (0x23, 0x40), (0x24, 0x40)] {
+                let table = last_payload(panel, command);
+                assert_eq!(&table[..8], &[1, packed, 48, 1, 1, 1, 1, 1]);
+                assert!(table[8..].iter().all(|&byte| byte == 0));
+            }
+        });
+    }
+}
+
+#[cfg(feature = "experimental-fast")]
+#[test]
+fn failed_short_startup_recovers_with_stock_conditioning_and_acknowledges_once() {
+    use std::{fs, sync::Mutex};
+    let root = std::env::temp_dir().join(format!("quote0-short-startup-{}", std::process::id()));
+    let device = Mutex::new(device::Device::open_at(root.clone()).unwrap());
+    let display = panel();
+    PANEL.with_borrow_mut(|panel| panel.spi_error_once = Some(0x12));
+    let mut renderer = render::Renderer::new(Some(display), Some(&device));
+    renderer.refresh(&device, status_bar::StatusBar::default());
+    let device = device.lock().unwrap();
+    assert!(device.display_error.is_none());
+    assert_eq!(device.display_refresh_mode, "full-fallback");
+    assert_eq!(device.display_refreshes, 1);
+    assert_eq!(
+        device.partial_refresh_error.as_deref(),
+        Some("EPD SPI transfer failed")
+    );
+    PANEL.with_borrow(|panel| {
+        assert!(!panel.powered);
+        assert_eq!(
+            panel
+                .commands
+                .iter()
+                .filter(|&&command| command == 0x04)
+                .count(),
+            2
+        );
+        for (command, expected) in (0x20..=0x24).zip(luts::stock()) {
+            assert_eq!(last_payload(panel, command), expected);
+        }
+        assert!(panel.retained_composed.is_some());
+    });
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(feature = "experimental-fast")]
@@ -430,7 +504,7 @@ fn main_image_differential_uses_the_full_baseline_and_preserves_body_after_strip
 
 #[cfg(feature = "experimental-differential")]
 #[test]
-fn uploaded_main_images_use_differential_refresh_with_periodic_stock_cleanup() {
+fn uploaded_main_images_use_differential_refresh_with_periodic_full_baselines() {
     use std::{fs, io::Write, sync::Mutex};
     let root =
         std::env::temp_dir().join(format!("quote0-main-differential-{}", std::process::id()));
@@ -459,7 +533,7 @@ fn uploaded_main_images_use_differential_refresh_with_periodic_stock_cleanup() {
             assert_eq!(
                 device.display_refresh_mode,
                 if image == 0 || image == 5 {
-                    "full"
+                    full_mode()
                 } else {
                     if cfg!(feature = "experimental-fast") {
                         "fast-differential"
@@ -480,12 +554,12 @@ fn uploaded_main_images_use_differential_refresh_with_periodic_stock_cleanup() {
 
 #[cfg(feature = "experimental-differential")]
 #[test]
-fn renderer_reports_differential_updates_and_performs_periodic_stock_cleanup() {
+fn idle_clock_updates_remain_windowed_beyond_the_former_full_refresh_budget() {
     use std::{fs, sync::Mutex};
     let root = std::env::temp_dir().join(format!("quote0-differential-{}", std::process::id()));
     let device = Mutex::new(device::Device::open_at(root.clone()).unwrap());
     let mut renderer = render::Renderer::new(Some(panel()), Some(&device));
-    for minute in 0..=5 {
+    for minute in 0..=12 {
         renderer.refresh(
             &device,
             status_bar::StatusBar {
@@ -499,8 +573,8 @@ fn renderer_reports_differential_updates_and_performs_periodic_stock_cleanup() {
         assert_eq!(device.display_refreshes, (minute + 1) as u32);
         assert_eq!(
             device.display_refresh_mode,
-            if minute == 0 || minute == 5 {
-                "full"
+            if minute == 0 {
+                full_mode()
             } else {
                 if cfg!(feature = "experimental-fast") {
                     "fast-window"
@@ -509,6 +583,12 @@ fn renderer_reports_differential_updates_and_performs_periodic_stock_cleanup() {
                 }
             }
         );
+        if minute > 0 {
+            PANEL.with_borrow(|panel| {
+                assert_eq!(last_payload(panel, 0x10).len(), status_window::BYTES);
+                assert_eq!(last_payload(panel, 0x13).len(), status_window::BYTES);
+            });
+        }
     }
     fs::remove_dir_all(root).unwrap();
 }
