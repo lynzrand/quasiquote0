@@ -43,16 +43,6 @@ mod wall_clock {
         1_767_225_600
     }
 }
-mod power {
-    pub struct Guard {
-        pub timer_wake: bool,
-    }
-    pub fn guard() -> Guard {
-        super::PANEL.with_borrow(|panel| Guard {
-            timer_wake: panel.deep_sleep_wake,
-        })
-    }
-}
 
 fn panel() -> Epd<'static> {
     PANEL.with_borrow_mut(|panel| *panel = Panel::default());
@@ -84,7 +74,7 @@ fn identical_composed_pixels_skip_spi_within_a_boot_and_after_deep_sleep() {
     use std::{fs, io::Write, sync::Mutex};
     let root = std::env::temp_dir().join(format!("quote0-unchanged-{}", std::process::id()));
     let device = Mutex::new(device::Device::open_at(root.clone()).unwrap());
-    let mut renderer = render::Renderer::new(Some(panel()), Some(&device));
+    let mut renderer = render::Renderer::new(Some(panel()));
     let status = status_bar::StatusBar {
         unix_seconds: Some(120),
         ..Default::default()
@@ -129,7 +119,7 @@ fn identical_composed_pixels_skip_spi_within_a_boot_and_after_deep_sleep() {
         panel.deep_sleep_wake = true;
         panel.retained_composed = retained;
     });
-    let mut renderer = render::Renderer::new(Some(display), Some(&device));
+    let mut renderer = render::Renderer::new(Some(display));
     renderer.refresh(&device, status);
     assert_eq!(device.lock().unwrap().display_refresh_mode, "unchanged");
     assert_eq!(device.lock().unwrap().display_refresh_ms, 0);
@@ -252,7 +242,7 @@ fn failed_short_startup_recovers_with_stock_conditioning_and_acknowledges_once()
     let device = Mutex::new(device::Device::open_at(root.clone()).unwrap());
     let display = panel();
     PANEL.with_borrow_mut(|panel| panel.spi_error_once = Some(0x12));
-    let mut renderer = render::Renderer::new(Some(display), Some(&device));
+    let mut renderer = render::Renderer::new(Some(display));
     renderer.refresh(&device, status_bar::StatusBar::default());
     let device = device.lock().unwrap();
     assert!(device.display_error.is_none());
@@ -509,7 +499,7 @@ fn uploaded_main_images_use_differential_refresh_with_periodic_full_baselines() 
     let root =
         std::env::temp_dir().join(format!("quote0-main-differential-{}", std::process::id()));
     let device = Mutex::new(device::Device::open_at(root.clone()).unwrap());
-    let mut renderer = render::Renderer::new(Some(panel()), Some(&device));
+    let mut renderer = render::Renderer::new(Some(panel()));
     let status = status_bar::StatusBar {
         unix_seconds: Some(1_767_225_600),
         ..Default::default()
@@ -558,7 +548,7 @@ fn idle_clock_updates_remain_windowed_beyond_the_former_full_refresh_budget() {
     use std::{fs, sync::Mutex};
     let root = std::env::temp_dir().join(format!("quote0-differential-{}", std::process::id()));
     let device = Mutex::new(device::Device::open_at(root.clone()).unwrap());
-    let mut renderer = render::Renderer::new(Some(panel()), Some(&device));
+    let mut renderer = render::Renderer::new(Some(panel()));
     for minute in 0..=12 {
         renderer.refresh(
             &device,
@@ -613,7 +603,7 @@ fn retained_frame_errors_are_reported_without_painting_and_clear_after_repair() 
             fs::remove_file(&path).unwrap();
         }
         let device = Mutex::new(device);
-        let mut renderer = render::Renderer::new(Some(panel()), Some(&device));
+        let mut renderer = render::Renderer::new(Some(panel()));
         renderer.refresh(&device, status_bar::StatusBar::default());
         let expected = if corrupt { "digest" } else { "missing" };
         assert!(device

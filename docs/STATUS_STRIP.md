@@ -10,9 +10,9 @@ glyphs do not receive another rotation.
 
 | Region | Landscape rows | Design |
 | --- | --- | --- |
-| Battery | 4–19 | Upright outline with five fill levels; critical exclamation and charging bolt variants |
+| Battery | 4–19 | Upright outline with five fill levels or a critical exclamation |
 | Wi-Fi | 28–43 | Radio arcs, disconnected slash, static connection dots, or failure mark |
-| USB power | 52–67 | Power plug, distinct from the battery's charging variant |
+| USB power | 52–67 | Power plug indicating VBUS; the board does not measure charging state |
 | Bluetooth | 76–91 | Upright Bluetooth rune |
 | Divider | 103 | Short horizontal rule above the clock |
 | Hours | 112–124 | Two upright digits using `FONT_7X13_BOLD` |

@@ -2,7 +2,7 @@
 use crate::{
     device::Device,
     display::Epd,
-    frame::{digest_hex, parse_digest, Sha256Digest},
+    frame::Sha256Digest,
     refresh_policy::{RefreshKey, RefreshTracker},
     rtc_display, rtc_schedule,
     status_bar::StatusBar,
@@ -17,36 +17,14 @@ pub(super) struct Renderer<'d> {
 }
 
 impl<'d> Renderer<'d> {
-    pub fn new(display: Option<Epd<'d>>, device: Option<&Mutex<Device>>) -> Self {
-        let mut renderer = Self {
+    pub fn new(display: Option<Epd<'d>>) -> Self {
+        Self {
             display,
             refreshes: RefreshTracker::default(),
+            // Only a validated RTC record can skip a repaint after deep sleep.
+            // Flash acknowledgements predate any failed, invalidated transfer.
             last_composed: rtc_display::load(),
-        };
-        // A retained, unchanged image with its bar disabled needs no timer-wake
-        // repaint. Partial refresh baselines remain strictly per boot.
-        if crate::power::guard().timer_wake {
-            if let Some(device) = device {
-                let device = device.lock().unwrap();
-                let state = device.state();
-                if !device.config().display.status_bar
-                    && state.displayed_status_bar == Some(false)
-                    && state.firmware_version.as_deref() == Some(env!("CARGO_PKG_VERSION"))
-                {
-                    if let Ok(content) = device.desired_digest() {
-                        if state.displayed_content_sha256.as_deref() == Some(&digest_hex(&content))
-                            && renderer.last_composed.is_none()
-                        {
-                            renderer.last_composed = state
-                                .displayed_composed_sha256
-                                .as_deref()
-                                .and_then(|digest| parse_digest(digest).ok());
-                        }
-                    }
-                }
-            }
         }
-        renderer
     }
 
     /// Recompose from the producer's retained frame for content/layout changes or

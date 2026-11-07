@@ -9,7 +9,7 @@ use crate::embedded_graphics::LandscapeFramebuffer;
 use crate::frame::{Frame, HEIGHT, WIDTH};
 use crate::status_icons::{
     Icon, BATTERY_0, BATTERY_100, BATTERY_25, BATTERY_50, BATTERY_75, BATTERY_CRITICAL, BLUETOOTH,
-    CHARGING, USB_POWER, WIFI_CONNECTED, WIFI_CONNECTING, WIFI_DISCONNECTED, WIFI_PULL_FAILED,
+    USB_POWER, WIFI_CONNECTED, WIFI_CONNECTING, WIFI_DISCONNECTED, WIFI_PULL_FAILED,
 };
 use embedded_graphics::{
     mono_font::{ascii::FONT_7X13_BOLD, MonoTextStyle},
@@ -25,7 +25,6 @@ const CLOCK_TOP: usize = 112;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BatteryMarker {
     Level(u8),
-    Charging,
     Critical,
 }
 
@@ -48,10 +47,7 @@ pub struct StatusBar {
 }
 
 impl StatusBar {
-    pub fn from_battery_percent(percent: Option<u32>, charging: bool) -> Option<BatteryMarker> {
-        if charging {
-            return Some(BatteryMarker::Charging);
-        }
+    pub fn from_battery_percent(percent: Option<u32>) -> Option<BatteryMarker> {
         percent.map(|percent| BatteryMarker::Level(percent.min(100).div_ceil(25) as u8))
     }
 
@@ -116,7 +112,6 @@ fn battery_icon(marker: BatteryMarker) -> Icon {
             3 => BATTERY_75,
             _ => BATTERY_100,
         },
-        BatteryMarker::Charging => CHARGING,
         BatteryMarker::Critical => BATTERY_CRITICAL,
     }
 }
@@ -168,11 +163,11 @@ mod tests {
     #[test]
     fn battery_levels_are_quantized_to_five_markers() {
         assert_eq!(
-            StatusBar::from_battery_percent(Some(0), false),
+            StatusBar::from_battery_percent(Some(0)),
             Some(BatteryMarker::Level(0))
         );
         assert_eq!(
-            StatusBar::from_battery_percent(Some(100), false),
+            StatusBar::from_battery_percent(Some(100)),
             Some(BatteryMarker::Level(4))
         );
     }
@@ -182,7 +177,7 @@ mod tests {
         let original = Frame::black();
         let mut frame = original.clone();
         StatusBar {
-            battery: Some(BatteryMarker::Charging),
+            battery: Some(BatteryMarker::Level(4)),
             wifi: Some(WifiMarker::Failed),
             usb_present: true,
             bluetooth_present: true,

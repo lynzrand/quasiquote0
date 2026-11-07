@@ -41,7 +41,7 @@ pub struct Appliance<'d> {
 impl<'d> Appliance<'d> {
     pub fn new(app: Arc<App>, display: Option<Epd<'d>>, network: Network<'d>) -> Self {
         let bluetooth = Bluetooth::start().ok();
-        let renderer = Renderer::new(display, app.device.as_deref());
+        let renderer = Renderer::new(display);
         Self {
             app,
             renderer,
@@ -216,7 +216,7 @@ impl<'d> Appliance<'d> {
                     {
                         Some(BatteryMarker::Critical)
                     } else {
-                        StatusBar::from_battery_percent(battery.percent, false)
+                        StatusBar::from_battery_percent(battery.percent)
                     },
                     wifi: Some(wifi),
                     usb_present: battery.usb_present,
