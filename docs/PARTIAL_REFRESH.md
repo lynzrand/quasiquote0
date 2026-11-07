@@ -136,7 +136,7 @@ physical battery-wake behavior requires a separate hardware run.
 Build and convert the experimental image using the esptool settings in
 [CONTRIBUTING.md](../CONTRIBUTING.md#application-images-for-browser-ota).
 Flash with `tools/flash_app_windows.ps1 -Image <image.bin>`. To
-return to full refresh, rebuild without the feature and flash that image;
+return to the stock full-refresh control, rebuild with `--no-default-features` and flash that image;
 no configuration, partition, or saved-frame migration is involved.
 
 ## Hardware result, 2026-10-18

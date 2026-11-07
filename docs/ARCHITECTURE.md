@@ -50,6 +50,9 @@ An erased first superblock is insufficient: LittleFS may still recover through
 its redundant metadata. Existing content-addressed files are verified before
 deduplication, so uploading the original bytes repairs a corrupt file. Changing
 a pull URL or bearer token clears validators before saving the new source.
+Publishing a different local image clears its previous remote validators in
+the same state write; a same-image reupload keeps them. Every successful pull,
+including a bodyless 204 or 304, clears the previous error in RAM.
 Conditional pulls also require verified retained bytes; missing or corrupt
 content omits both validators so the server can return a complete replacement.
 The renderer reports missing or corrupt content as an error without replacing
@@ -73,6 +76,8 @@ sleep after success preserves it for the next explicit old-plane upload.
 Identical composed pixels are acknowledged without a physical refresh. A
 versioned, checksummed 48-byte RTC record carries the last confirmed digest
 through deep sleep, without retaining a differential framebuffer baseline.
+Only that record authorizes a skipped wake; an older flash acknowledgement
+cannot override an invalidated RTC record after a failed refresh.
 The short profile uses destination pulses while retaining the proven
 cold reset and power cycle. Digital standby was removed after a failed optical
 trial, so controller state is never assumed to survive the previous transaction.
