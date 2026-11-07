@@ -49,8 +49,12 @@ mod tests {
         let mut lines = Lines::default();
         for _ in 0..MAX_LINE + 10 {
             assert!(lines.push(b'x').is_none());
+            assert!(lines.bytes.len() <= MAX_LINE);
         }
-        assert!(lines.push(b'\n').unwrap().is_err());
+        assert!(matches!(
+            lines.push(b'\n'),
+            Some(Err("Setup command exceeds 1024 bytes"))
+        ));
         let mut result = None;
         for byte in b"{\"cmd\":\"status\"}\n" {
             result = lines.push(*byte);
